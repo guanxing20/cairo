@@ -50,6 +50,7 @@ mod felt252;
 mod felt252_dict;
 mod function_call;
 mod gas;
+mod gas_reserve;
 mod int;
 mod mem;
 mod misc;
@@ -689,13 +690,15 @@ pub fn compile_invocation(
         }
         Sint128(libfunc) => int::signed128::build(libfunc, builder),
         Gas(libfunc) => gas::build(libfunc, builder),
+        GasReserve(libfunc) => gas_reserve::build(libfunc, builder),
         BranchAlign(_) => misc::build_branch_align(builder),
         Array(libfunc) => array::build(libfunc, builder),
         Drop(_) => misc::build_drop(builder),
         Dup(_) => misc::build_dup(builder),
         Mem(libfunc) => mem::build(libfunc, builder),
         UnwrapNonZero(_) => misc::build_identity(builder),
-        FunctionCall(libfunc) | CouponCall(libfunc) => function_call::build(libfunc, builder),
+        FunctionCall(libfunc) | CouponCall(libfunc) => function_call::build(libfunc, builder, true),
+        DummyFunctionCall(libfunc) => function_call::build(libfunc, builder, false),
         UnconditionalJump(_) => misc::build_jump(builder),
         ApTracking(_) => misc::build_update_ap_tracking(builder),
         Box(libfunc) => boxing::build(libfunc, builder),

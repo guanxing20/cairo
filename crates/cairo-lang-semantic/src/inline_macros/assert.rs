@@ -4,8 +4,10 @@ use cairo_lang_defs::plugin::{
     PluginGeneratedFile,
 };
 use cairo_lang_defs::plugin_utils::{
-    escape_node, try_extract_unnamed_arg, unsupported_bracket_diagnostic,
+    PluginResultTrait, escape_node, not_legacy_macro_diagnostic, try_extract_unnamed_arg,
+    unsupported_bracket_diagnostic,
 };
+use cairo_lang_parser::macro_helpers::AsLegacyInlineMacro;
 use cairo_lang_syntax::node::ast::WrappedArgList;
 use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{TypedSyntaxNode, ast};
@@ -24,11 +26,18 @@ impl InlineMacroExprPlugin for AssertMacro {
         syntax: &ast::ExprInlineMacro,
         _metadata: &MacroPluginMetadata<'_>,
     ) -> InlinePluginResult {
-        let WrappedArgList::ParenthesizedArgList(arguments_syntax) = syntax.arguments(db) else {
-            return unsupported_bracket_diagnostic(db, syntax);
+        let Some(legacy_inline_macro) = syntax.as_legacy_inline_macro(db) else {
+            return InlinePluginResult::diagnostic_only(not_legacy_macro_diagnostic(
+                syntax.as_syntax_node().stable_ptr(db),
+            ));
         };
-        let arguments = arguments_syntax.arguments(db).elements(db);
-        let Some((value, format_args)) = arguments.split_first() else {
+        let WrappedArgList::ParenthesizedArgList(arguments_syntax) =
+            legacy_inline_macro.arguments(db)
+        else {
+            return unsupported_bracket_diagnostic(db, &legacy_inline_macro, syntax.stable_ptr(db));
+        };
+        let mut arguments = arguments_syntax.arguments(db).elements(db);
+        let Some(value) = arguments.next() else {
             return InlinePluginResult {
                 code: None,
                 diagnostics: vec![PluginDiagnostic::error(
@@ -37,7 +46,7 @@ impl InlineMacroExprPlugin for AssertMacro {
                 )],
             };
         };
-        let Some(value) = try_extract_unnamed_arg(db, value) else {
+        let Some(value) = try_extract_unnamed_arg(db, &value) else {
             return InlinePluginResult {
                 code: None,
                 diagnostics: vec![PluginDiagnostic::error(
@@ -58,7 +67,7 @@ impl InlineMacroExprPlugin for AssertMacro {
             },
             &[("value".to_string(), RewriteNode::from_ast_trimmed(&value))].into(),
         ));
-        if format_args.is_empty() {
+        if arguments.len() == 0 {
             builder.add_str(&formatdoc!(
                 "core::result::ResultTrait::<(), core::fmt::Error>::unwrap(write!({f}, \
                  \"assertion failed: `{value_escaped}`.\"));\n",
@@ -84,7 +93,7 @@ impl InlineMacroExprPlugin for AssertMacro {
                     (
                         "args".to_string(),
                         RewriteNode::interspersed(
-                            format_args.iter().map(RewriteNode::from_ast_trimmed),
+                            arguments.map(|e| RewriteNode::from_ast_trimmed(&e)),
                             RewriteNode::text(", "),
                         ),
                     ),

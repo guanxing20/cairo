@@ -52,7 +52,7 @@ pub enum RewriteResult {
 
 /// A substitution of generic arguments in generic parameters as well as the `Self` of traits. Used
 /// for concretization.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct GenericSubstitution {
     param_to_arg: OrderedHashMap<GenericParamId, GenericArgumentId>,
     self_impl: Option<ImplId>,
@@ -82,7 +82,7 @@ impl GenericSubstitution {
     where
         SubstitutionRewriter<'a>: SemanticRewriter<Obj, DiagnosticAdded>,
     {
-        SubstitutionRewriter { db: db.upcast(), substitution: self }.rewrite(obj)
+        SubstitutionRewriter { db, substitution: self }.rewrite(obj)
     }
 }
 impl Deref for GenericSubstitution {
@@ -95,15 +95,6 @@ impl Deref for GenericSubstitution {
 impl DerefMut for GenericSubstitution {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.param_to_arg
-    }
-}
-#[allow(clippy::derived_hash_with_manual_eq)]
-impl std::hash::Hash for GenericSubstitution {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.param_to_arg.len().hash(state);
-        for e in self.param_to_arg.iter() {
-            e.hash(state);
-        }
     }
 }
 
@@ -578,7 +569,7 @@ impl SemanticRewriter<GenericFunctionWithBodyId, DiagnosticAdded> for Substituti
         if let GenericFunctionWithBodyId::Trait(id) = value {
             if let Some(self_impl) = &self.substitution.self_impl {
                 if let ImplLongId::Concrete(concrete_impl_id) = self_impl.lookup_intern(self.db) {
-                    if self.rewrite(id.concrete_trait(self.db.upcast()))?
+                    if self.rewrite(id.concrete_trait(self.db))?
                         == self_impl.concrete_trait(self.db)?
                     {
                         *value = GenericFunctionWithBodyId::Impl(ImplGenericFunctionWithBodyId {

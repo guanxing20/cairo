@@ -1,11 +1,13 @@
+use cairo_lang_syntax::attribute::consts::FMT_SKIP_ATTR;
 use cairo_lang_syntax::node::ast::MaybeModuleBody;
 use cairo_lang_syntax::node::db::SyntaxGroup;
+use cairo_lang_syntax::node::helpers::QueryAttrs;
 use cairo_lang_syntax::node::kind::SyntaxKind;
 use cairo_lang_syntax::node::{SyntaxNode, TypedSyntaxNode, ast};
 
 use crate::formatter_impl::{
-    BreakLinePointIndentation, BreakLinePointProperties, BreakLinePointsPositions, SortKind,
-    SyntaxNodeFormat,
+    BreakLinePointIndentation, BreakLinePointProperties, BreakLinePointsPositions,
+    IgnoreFormattingSpacingData, SortKind, SyntaxNodeFormat,
 };
 use crate::{CollectionsBreakingBehavior, FormatterConfig};
 
@@ -101,7 +103,8 @@ impl SyntaxNodeFormat for SyntaxNode {
             | SyntaxKind::TokenColonColon
             | SyntaxKind::TokenLParen
             | SyntaxKind::TokenLBrack
-            | SyntaxKind::TokenImplicits => true,
+            | SyntaxKind::TokenImplicits
+            | SyntaxKind::TokenDollar => true,
             SyntaxKind::TerminalDotDot | SyntaxKind::TerminalDotDotEq
                 if matches!(self.parent_kind(db), Some(SyntaxKind::ExprBinary)) =>
             {
@@ -168,7 +171,8 @@ impl SyntaxNodeFormat for SyntaxNode {
                 true
             }
             SyntaxKind::TokenColon
-                if self.grandparent_kind(db) == Some(SyntaxKind::ArgClauseFieldInitShorthand) =>
+                if self.grandparent_kind(db) == Some(SyntaxKind::ArgClauseFieldInitShorthand)
+                    || self.grandgrandparent_kind(db) == Some(SyntaxKind::MacroParam) =>
             {
                 true
             }
@@ -265,7 +269,7 @@ impl SyntaxNodeFormat for SyntaxNode {
             },
             Some(SyntaxKind::ExprWhile) => match self.kind(db) {
                 SyntaxKind::ExprBlock => Some(1),
-                SyntaxKind::ConditionExpr | SyntaxKind::ConditionLet => Some(2),
+                SyntaxKind::ConditionListAnd => Some(2),
                 SyntaxKind::ExprBinary
                 | SyntaxKind::ExprErrorPropagate
                 | SyntaxKind::ExprFieldInitShorthand
@@ -293,7 +297,7 @@ impl SyntaxNodeFormat for SyntaxNode {
 
             Some(SyntaxKind::ExprIf) => match self.kind(db) {
                 SyntaxKind::ExprBlock => Some(1),
-                SyntaxKind::ConditionExpr | SyntaxKind::ConditionLet => Some(2),
+                SyntaxKind::ConditionListAnd => Some(2),
                 SyntaxKind::ElseClause => Some(3),
                 _ => None,
             },
@@ -415,6 +419,11 @@ impl SyntaxNodeFormat for SyntaxNode {
                 SyntaxKind::TypeClause => Some(12),
                 _ => None,
             },
+            Some(SyntaxKind::MacroRulesList | SyntaxKind::MacroRule) => match self.kind(db) {
+                SyntaxKind::ItemMacroDeclaration => Some(3),
+                SyntaxKind::ParenthesizedMacro => Some(2),
+                _ => Some(1),
+            },
             _ => match self.kind(db) {
                 SyntaxKind::ExprParenthesized
                 | SyntaxKind::ExprList
@@ -447,7 +456,10 @@ impl SyntaxNodeFormat for SyntaxNode {
                 | SyntaxKind::UsePathMulti
                 | SyntaxKind::ItemEnum
                 | SyntaxKind::PatternFixedSizeArray
-                | SyntaxKind::ExprFixedSizeArray => Some(5),
+                | SyntaxKind::ExprFixedSizeArray
+                | SyntaxKind::ParenthesizedTokenTree
+                | SyntaxKind::BracedTokenTree
+                | SyntaxKind::BracketedTokenTree => Some(5),
                 _ => None,
             },
         }
@@ -496,6 +508,14 @@ impl SyntaxNodeFormat for SyntaxNode {
                     BreakLinePointIndentation::NotIndented,
                     false,
                     false,
+                ))
+            }
+            Some(SyntaxKind::MacroRulesList) => {
+                BreakLinePointsPositions::new_symmetric(BreakLinePointProperties::new(
+                    21,
+                    BreakLinePointIndentation::IndentedWithTail,
+                    false,
+                    true,
                 ))
             }
             _ => match self.kind(db) {
@@ -829,28 +849,24 @@ impl SyntaxNodeFormat for SyntaxNode {
                     true,
                     true,
                 );
-                if let Some(grandparent_kind) = self.grandparent_kind(db) {
-                    if self.parent_kind(db) == Some(SyntaxKind::ArgListBracketed) {
-                        match grandparent_kind {
-                            SyntaxKind::ExprInlineMacro => {
-                                match config.breaking_behavior.macro_call {
-                                    CollectionsBreakingBehavior::SingleBreakPoint => {
-                                        properties.set_single_breakpoint();
-                                    }
-                                    CollectionsBreakingBehavior::LineByLine => {
-                                        properties.set_line_by_line();
-                                    }
+                if self.parent_kind(db) == Some(SyntaxKind::ArgListBracketed) {
+                    match self.grandparent_kind(db) {
+                        Some(SyntaxKind::ExprInlineMacro) | None => {
+                            match config.breaking_behavior.macro_call {
+                                CollectionsBreakingBehavior::SingleBreakPoint => {
+                                    properties.set_single_breakpoint();
+                                }
+                                CollectionsBreakingBehavior::LineByLine => {
+                                    properties.set_line_by_line();
                                 }
                             }
-                            _ => {
-                                properties.set_line_by_line();
-                            }
+                        }
+                        _ => {
+                            properties.set_line_by_line();
                         }
                     }
-                    BreakLinePointsPositions::List { properties, breaking_frequency: 2 }
-                } else {
-                    BreakLinePointsPositions::None
                 }
+                BreakLinePointsPositions::List { properties, breaking_frequency: 2 }
             }
             SyntaxKind::ExprList => {
                 let mut properties = BreakLinePointProperties::new(
@@ -985,7 +1001,7 @@ impl SyntaxNodeFormat for SyntaxNode {
                 false
             } else {
                 matches!(
-                    path_node.parent_kind(db),
+                    path_node.grandparent_kind(db),
                     Some(
                         SyntaxKind::GenericArgValueExpr
                             | SyntaxKind::GenericParamImplAnonymous
@@ -1016,6 +1032,26 @@ impl SyntaxNodeFormat for SyntaxNode {
             _ => SortKind::Immovable,
         }
     }
+    fn should_ignore_node_format(
+        &self,
+        db: &dyn SyntaxGroup,
+    ) -> Option<IgnoreFormattingSpacingData> {
+        if self.has_attr(db, FMT_SKIP_ATTR) {
+            return Some(IgnoreFormattingSpacingData {
+                add_space_before: false,
+                prevent_space_after: false,
+            });
+        } else if matches!(
+            self.kind(db),
+            SyntaxKind::ParenthesizedMacro | SyntaxKind::BracedMacro | SyntaxKind::BracketedMacro
+        ) {
+            return Some(IgnoreFormattingSpacingData {
+                add_space_before: true,
+                prevent_space_after: false,
+            });
+        }
+        None
+    }
 }
 
 /// For statement lists, returns if we want these as a single line.
@@ -1030,7 +1066,6 @@ fn is_statement_list_break_point_optional(db: &dyn SyntaxGroup, node: &SyntaxNod
             d.kind(db) != SyntaxKind::Trivia
                 || ast::Trivia::from_syntax_node(db, d)
                     .elements(db)
-                    .iter()
                     .all(|t| !matches!(t, ast::Trivium::SingleLineComment(_)))
         })
 }

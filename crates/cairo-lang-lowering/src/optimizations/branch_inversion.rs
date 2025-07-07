@@ -7,7 +7,7 @@ use cairo_lang_utils::Intern;
 
 use crate::db::LoweringGroup;
 use crate::ids::FunctionLongId;
-use crate::{FlatBlockEnd, FlatLowered, MatchInfo, Statement, StatementCall};
+use crate::{BlockEnd, Lowered, MatchInfo, Statement, StatementCall};
 
 /// Performs branch inversion optimization on a lowered function.
 ///
@@ -21,20 +21,16 @@ use crate::{FlatBlockEnd, FlatLowered, MatchInfo, Statement, StatementCall};
 ///
 /// Note: The call to `bool_not_impl` is not deleted as we don't know if its output
 /// is used by other statements (or block ending).
-pub fn branch_inversion(db: &dyn LoweringGroup, lowered: &mut FlatLowered) {
+pub fn branch_inversion(db: &dyn LoweringGroup, lowered: &mut Lowered) {
     if lowered.blocks.is_empty() {
         return;
     }
-    let semantic_db = db.upcast();
-    let bool_not_func_id = FunctionLongId::Semantic(corelib::get_core_function_id(
-        semantic_db,
-        "bool_not_impl".into(),
-        vec![],
-    ))
-    .intern(db);
+    let bool_not_func_id =
+        FunctionLongId::Semantic(corelib::get_core_function_id(db, "bool_not_impl".into(), vec![]))
+            .intern(db);
 
     for block in lowered.blocks.iter_mut() {
-        if let FlatBlockEnd::Match { info: MatchInfo::Enum(ref mut info) } = &mut block.end {
+        if let BlockEnd::Match { info: MatchInfo::Enum(ref mut info) } = &mut block.end {
             if let Some(negated_condition) = block
                 .statements
                 .iter()

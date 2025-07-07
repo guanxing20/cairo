@@ -179,8 +179,7 @@ pub enum InferenceError {
         func0: GenericFunctionId,
         func1: GenericFunctionId,
     },
-    ConstInferenceNotSupported,
-
+    ConstNotInferred,
     // TODO(spapini): These are only used for external interface. Separate them along with the
     // finalize() function to a wrapper.
     NoImplsFound(ConcreteTraitId),
@@ -211,9 +210,7 @@ impl InferenceError {
             InferenceError::TraitMismatch { trt0, trt1 } => {
                 format!("Trait mismatch: `{:?}` and `{:?}`.", trt0.debug(db), trt1.debug(db))
             }
-            InferenceError::ConstInferenceNotSupported => {
-                "Const generic inference not yet supported.".into()
-            }
+            InferenceError::ConstNotInferred => "Failed to infer constant.".into(),
             InferenceError::NoImplsFound(concrete_trait_id) => {
                 let info = db.core_info();
                 let trait_id = concrete_trait_id.trait_id(db);
@@ -253,8 +250,8 @@ impl InferenceError {
             InferenceError::ImplTypeMismatch { impl_id, trait_type_id, ty0, ty1 } => {
                 format!(
                     "`{}::{}` type mismatch: `{:?}` and `{:?}`.",
-                    impl_id.format(db.upcast()),
-                    trait_type_id.name(db.upcast()),
+                    impl_id.format(db),
+                    trait_type_id.name(db),
                     ty0.debug(db),
                     ty1.debug(db)
                 )
@@ -293,7 +290,7 @@ pub enum InferenceErrorStatus {
 }
 
 /// A mapping of an impl var's trait items to concrete items
-#[derive(Debug, Default, PartialEq, Eq, Clone, SemanticObject)]
+#[derive(Debug, Default, PartialEq, Eq, Hash, Clone, SemanticObject)]
 pub struct ImplVarTraitItemMappings {
     /// The trait types of the impl var.
     types: OrderedHashMap<TraitTypeId, TypeId>,
@@ -301,22 +298,6 @@ pub struct ImplVarTraitItemMappings {
     constants: OrderedHashMap<TraitConstantId, ConstValueId>,
     /// The trait impls of the impl var.
     impls: OrderedHashMap<TraitImplId, ImplId>,
-}
-impl Hash for ImplVarTraitItemMappings {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.types.iter().for_each(|(trait_type_id, type_id)| {
-            trait_type_id.hash(state);
-            type_id.hash(state);
-        });
-        self.constants.iter().for_each(|(trait_const_id, const_id)| {
-            trait_const_id.hash(state);
-            const_id.hash(state);
-        });
-        self.impls.iter().for_each(|(trait_impl_id, impl_id)| {
-            trait_impl_id.hash(state);
-            impl_id.hash(state);
-        });
-    }
 }
 
 /// State of inference.
@@ -606,8 +587,7 @@ impl<'db> Inference<'db> {
         stable_ptr: Option<SyntaxStablePtrId>,
     ) -> LocalImplVarId {
         let mut lookup_context = lookup_context;
-        lookup_context
-            .insert_module(concrete_trait_id.trait_id(self.db).module_file_id(self.db.upcast()).0);
+        lookup_context.insert_module(concrete_trait_id.trait_id(self.db).module_file_id(self.db).0);
 
         let id = LocalImplVarId(self.impl_vars.len());
         if let Some(stable_ptr) = stable_ptr {
@@ -630,8 +610,8 @@ impl<'db> Inference<'db> {
 
     /// Same as `solve`, but returns the error stable pointer if an error occurred.
     fn solve_ex(&mut self) -> Result<(), (ErrorSet, Option<SyntaxStablePtrId>)> {
-        let mut ambiguous = std::mem::take(&mut self.ambiguous);
-        self.pending.extend(ambiguous.drain(..).map(|(var, _)| var));
+        let ambiguous = std::mem::take(&mut self.ambiguous).into_iter();
+        self.pending.extend(ambiguous.map(|(var, _)| var));
         while let Some(var) = self.pending.pop_front() {
             // First inference error stops inference.
             self.solve_single_pending(var).map_err(|err_set| {
@@ -662,8 +642,8 @@ impl<'db> Inference<'db> {
 
         // Something changed.
         self.solved.push(var);
-        let mut ambiguous = std::mem::take(&mut self.ambiguous);
-        self.pending.extend(ambiguous.drain(..).map(|(var, _)| var));
+        let ambiguous = std::mem::take(&mut self.ambiguous).into_iter();
+        self.pending.extend(ambiguous.map(|(var, _)| var));
 
         Ok(())
     }
@@ -783,6 +763,12 @@ impl<'db> Inference<'db> {
             if self.type_assignment(LocalTypeVarId(id)).is_none() {
                 let ty = TypeLongId::Var(*var).intern(self.db);
                 return Some((InferenceVar::Type(var.id), InferenceError::TypeNotInferred(ty)));
+            }
+        }
+        for (id, var) in self.const_vars.iter().enumerate() {
+            if !self.const_assignment.contains_key(&LocalConstVarId(id)) {
+                let infernence_var = InferenceVar::Const(var.id);
+                return Some((infernence_var, InferenceError::ConstNotInferred));
             }
         }
         fallback_ret
@@ -1147,7 +1133,7 @@ impl<'db> Inference<'db> {
         }
         self.error_status = Err(InferenceErrorStatus::Consumed);
         self.consumed_error = Some(diag_added);
-        mem::take(&mut self.error)
+        self.error.take()
     }
 
     /// Consumes the pending error, if any, and reports it.

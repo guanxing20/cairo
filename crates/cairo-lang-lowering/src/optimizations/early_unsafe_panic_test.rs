@@ -2,13 +2,14 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use cairo_lang_debug::DebugWithDb;
-use cairo_lang_filesystem::db::{AsFilesGroupMut, FilesGroupEx};
+use cairo_lang_filesystem::db::FilesGroupEx;
 use cairo_lang_filesystem::flag::Flag;
 use cairo_lang_filesystem::ids::FlagId;
 use cairo_lang_semantic::test_utils::setup_test_function;
 use cairo_lang_test_utils::parse_test_file::TestRunnerResult;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 
+use crate::LoweringStage;
 use crate::db::LoweringGroup;
 use crate::fmt::LoweredFormatter;
 use crate::ids::ConcreteFunctionWithBodyId;
@@ -29,7 +30,7 @@ fn test_early_unsafe_panic(
     _args: &OrderedHashMap<String, String>,
 ) -> TestRunnerResult {
     let db = &mut LoweringDatabaseForTesting::new();
-    let unsafe_panic_flag_id = FlagId::new(db.as_files_group_mut(), "unsafe_panic");
+    let unsafe_panic_flag_id = FlagId::new(db, "unsafe_panic");
     db.set_flag(unsafe_panic_flag_id, Some(Arc::new(Flag::UnsafePanic(true))));
     let (test_function, semantic_diagnostics) = setup_test_function(
         db,
@@ -42,11 +43,8 @@ fn test_early_unsafe_panic(
     let function_id =
         ConcreteFunctionWithBodyId::from_semantic(db, test_function.concrete_function_id);
 
-    let before = db
-        .function_with_body_lowering(function_id.function_with_body_id(db))
-        .unwrap()
-        .deref()
-        .clone();
+    let before =
+        db.lowered_body(function_id, LoweringStage::PreOptimizations).unwrap().deref().clone();
 
     let lowering_diagnostics = db.module_lowering_diagnostics(test_function.module_id).unwrap();
     let mut after = before.clone();

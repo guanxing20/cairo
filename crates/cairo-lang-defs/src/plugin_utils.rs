@@ -1,5 +1,6 @@
 use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::WrappedArgListHelper;
+use cairo_lang_syntax::node::ids::SyntaxStablePtrId;
 use cairo_lang_syntax::node::{SyntaxNode, TypedSyntaxNode, ast};
 use cairo_lang_utils::require;
 use itertools::Itertools;
@@ -14,7 +15,7 @@ pub trait InlineMacroCall {
     fn path(&self, db: &dyn SyntaxGroup) -> Self::PathNode;
 }
 
-impl InlineMacroCall for ast::ExprInlineMacro {
+impl InlineMacroCall for ast::LegacyExprInlineMacro {
     type PathNode = ast::ExprPath;
     type Result = InlinePluginResult;
 
@@ -27,7 +28,7 @@ impl InlineMacroCall for ast::ExprInlineMacro {
     }
 }
 
-impl InlineMacroCall for ast::ItemInlineMacro {
+impl InlineMacroCall for ast::LegacyItemInlineMacro {
     type PathNode = ast::TerminalIdentifier;
     type Result = PluginResult;
 
@@ -60,15 +61,27 @@ impl PluginResultTrait for PluginResult {
 /// Returns diagnostics for an unsupported bracket type.
 pub fn unsupported_bracket_diagnostic<CallAst: InlineMacroCall>(
     db: &dyn SyntaxGroup,
-    macro_ast: &CallAst,
+    legacy_macro_ast: &CallAst,
+    macro_ast: impl Into<SyntaxStablePtrId>,
 ) -> CallAst::Result {
-    CallAst::Result::diagnostic_only(PluginDiagnostic::error(
-        macro_ast.arguments(db).left_bracket_stable_ptr(db),
+    CallAst::Result::diagnostic_only(PluginDiagnostic::error_with_inner_span(
+        db,
+        macro_ast,
+        legacy_macro_ast.arguments(db).left_bracket_syntax_node(db),
         format!(
             "Macro `{}` does not support this bracket type.",
-            macro_ast.path(db).as_syntax_node().get_text_without_trivia(db)
+            legacy_macro_ast.path(db).as_syntax_node().get_text_without_trivia(db)
         ),
     ))
+}
+
+pub fn not_legacy_macro_diagnostic(stable_ptr: SyntaxStablePtrId) -> PluginDiagnostic {
+    PluginDiagnostic::error(
+        stable_ptr,
+        "Macro can not be parsed as legacy macro. Expected an argument list wrapped in either \
+         parentheses, brackets, or braces."
+            .to_string(),
+    )
 }
 
 /// Extracts a single unnamed argument.
@@ -76,11 +89,8 @@ pub fn extract_single_unnamed_arg(
     db: &dyn SyntaxGroup,
     macro_arguments: ast::ArgList,
 ) -> Option<ast::Expr> {
-    if let Ok([arg]) = <[_; 1]>::try_from(macro_arguments.elements(db)) {
-        try_extract_unnamed_arg(db, &arg)
-    } else {
-        None
-    }
+    let mut elements = macro_arguments.elements(db);
+    if elements.len() == 1 { try_extract_unnamed_arg(db, &elements.next()?) } else { None }
 }
 
 /// Extracts `n` unnamed arguments.
@@ -91,7 +101,7 @@ pub fn extract_unnamed_args(
 ) -> Option<Vec<ast::Expr>> {
     let elements = macro_arguments.elements(db);
     require(elements.len() == n)?;
-    elements.iter().map(|x| try_extract_unnamed_arg(db, x)).collect()
+    elements.map(|x| try_extract_unnamed_arg(db, &x)).collect()
 }
 
 /// Gets the syntax of an argument, and extracts the value if it is unnamed.
@@ -118,14 +128,19 @@ pub fn escape_node(db: &dyn SyntaxGroup, node: SyntaxNode) -> String {
 ///     db,
 ///     syntax,
 ///     2,
-///     ast::WrappedArgList::ParenthesizedArgList(_) | ast::WrappedArgList::BracedArgList(_)
+///     ast::WrappedArgList::ParenthesizedArgList(_) | ast::WrappedArgList::BracedArgList(_),
+///     token_tree_syntax.stable_ptr(db)
 /// );
 #[macro_export]
 macro_rules! extract_macro_unnamed_args {
-    ($db:expr, $syntax:expr, $n:expr, $pattern:pat) => {{
+    ($db:expr, $syntax:expr, $n:expr, $pattern:pat, $diagnostics_ptr:expr) => {{
         let arguments = $crate::plugin_utils::InlineMacroCall::arguments($syntax, $db);
         if !matches!(arguments, $pattern) {
-            return $crate::plugin_utils::unsupported_bracket_diagnostic($db, $syntax);
+            return $crate::plugin_utils::unsupported_bracket_diagnostic(
+                $db,
+                $syntax,
+                $diagnostics_ptr,
+            );
         }
         // `unwrap` is ok because the above `matches` condition ensures it's not None (unless
         // the pattern contains the `Missing` variant).
@@ -137,7 +152,7 @@ macro_rules! extract_macro_unnamed_args {
         let Some(args) = args else {
             return $crate::plugin_utils::PluginResultTrait::diagnostic_only(
                 PluginDiagnostic::error(
-                    $syntax.stable_ptr($db),
+                    $diagnostics_ptr,
                     format!(
                         "Macro `{}` must have exactly {} unnamed arguments.",
                         $crate::plugin_utils::InlineMacroCall::path($syntax, $db)
@@ -154,18 +169,23 @@ macro_rules! extract_macro_unnamed_args {
 }
 
 /// Macro to extract a single unnamed argument of an inline macro.
+///
 /// Gets the pattern for the allowed bracket types, and returns the argument expression.
+/// The arguments are extracted from a `WrappedArgList` node syntax, as was in legacy inline macros.
+/// However, as macros are now parsed as general token trees, the diagnostics pointer is passed to
+/// the macro to allow pointing to the original location.
 ///
 /// Example usage (allowing `()` or `{}` brackets):
 /// let arg = extract_macro_single_unnamed_arg!(
 ///     db,
-///     syntax,
-///     ast::WrappedArgList::ParenthesizedArgList(_) | ast::WrappedArgList::BracedArgList(_)
+///     arg_list_syntax,
+///     ast::WrappedArgList::ParenthesizedArgList(_) | ast::WrappedArgList::BracedArgList(_),
+///     token_tree_syntax.stable_ptr(db)
 /// );
 #[macro_export]
 macro_rules! extract_macro_single_unnamed_arg {
-    ($db:expr, $syntax:expr, $pattern:pat) => {{
-        let [x] = $crate::extract_macro_unnamed_args!($db, $syntax, 1, $pattern);
+    ($db:expr, $syntax:expr, $pattern:pat, $diagnostics_ptr:expr) => {{
+        let [x] = $crate::extract_macro_unnamed_args!($db, $syntax, 1, $pattern, $diagnostics_ptr);
         x
     }};
 }

@@ -49,7 +49,7 @@ pub fn reformat_rust_code(text: String) -> String {
 }
 pub fn reformat_rust_code_inner(text: String) -> String {
     let sh = Shell::new().unwrap();
-    let cmd = sh.cmd("rustfmt").env("RUSTUP_TOOLCHAIN", "nightly-2025-04-04");
+    let cmd = sh.cmd("rustfmt").env("RUSTUP_TOOLCHAIN", "nightly-2025-06-29");
     let cmd_with_args = cmd.arg("--config-path").arg(project_root().join("rustfmt.toml"));
     let mut stdout = cmd_with_args.stdin(text).read().unwrap();
     if !stdout.ends_with('\n') {
@@ -135,12 +135,12 @@ fn generate_key_fields_code() -> rust::Tokens {
                     }
                 }
                 arms.extend(quote! {
-                    SyntaxKind::$name => {vec![$fields]},
+                    SyntaxKind::$name => [$fields].into(),
                 });
             }
             NodeKind::List { .. } | NodeKind::SeparatedList { .. } | NodeKind::Token { .. } => {
                 arms.extend(quote! {
-                    SyntaxKind::$name => vec![],
+                    SyntaxKind::$name => [].into(),
                 });
             }
             NodeKind::Enum { .. } => {}
@@ -155,7 +155,7 @@ fn generate_key_fields_code() -> rust::Tokens {
         $("///\n")
         $("/// Each SyntaxKind has some children that are defined in the spec to be its indexing key\n")
         $("/// for its stable pointer. See [super::stable_ptr].\n")
-        pub fn get_key_fields(kind: SyntaxKind, children: &[GreenId]) -> Vec<GreenId> {
+        pub fn get_key_fields(kind: SyntaxKind, children: &[GreenId]) -> Box<[GreenId]> {
             match kind {
                 $arms
             }
@@ -235,7 +235,7 @@ fn gen_list_code(name: String, element_type: String) -> rust::Tokens {
         }
         impl $(&name){
             pub fn new_green(
-                db: &dyn SyntaxGroup, children: Vec<$(&element_green_name)>
+                db: &dyn SyntaxGroup, children: &[$(&element_green_name)]
             ) -> $(&green_name) {
                 let width = children.iter().map(|id|
                     id.0.lookup_intern(db).width()).sum();
@@ -292,7 +292,7 @@ fn gen_separated_list_code(
         }
         impl $(&name){
             pub fn new_green(
-                db: &dyn SyntaxGroup, children: Vec<$(&element_or_separator_green_name)>
+                db: &dyn SyntaxGroup, children: &[$(&element_or_separator_green_name)]
             ) -> $(&green_name) {
                 let width = children.iter().map(|id|
                     id.id().lookup_intern(db).width()).sum();
@@ -360,7 +360,7 @@ fn gen_common_list_code(name: &str, green_name: &str, ptr_name: &str) -> rust::T
                 $green_name(Arc::new(
                     GreenNode {
                         kind: SyntaxKind::$name,
-                        details: GreenNodeDetails::Node { children: vec![], width: TextWidth::default() },
+                        details: GreenNodeDetails::Node { children: [].into(), width: TextWidth::default() },
                     }).intern(db)
                 )
             }
@@ -638,12 +638,12 @@ fn gen_struct_code(name: String, members: Vec<Member>, is_terminal: bool) -> rus
                     token: <<$(&name) as Terminal>::TokenType as TypedSyntaxNode>::Green,
                     trailing_trivia: TriviaGreen
                 ) -> Self::Green {
-                    let children: Vec<GreenId> = vec![$args];
-                    let width = children.iter().copied().map(|id|
-                        id.lookup_intern(db).width()).sum();
+                    let children = [$args];
+                    let width =
+                        children.into_iter().map(|id: GreenId| id.lookup_intern(db).width()).sum();
                     $(&green_name)(Arc::new(GreenNode {
                         kind: SyntaxKind::$(&name),
-                        details: GreenNodeDetails::Node { children, width },
+                        details: GreenNodeDetails::Node { children: children.into(), width },
                     }).intern(db))
                 }
                 fn text(&self, db: &dyn SyntaxGroup) -> SmolStr {
@@ -656,12 +656,12 @@ fn gen_struct_code(name: String, members: Vec<Member>, is_terminal: bool) -> rus
             impl $(&name) {
                 $field_indices
                 pub fn new_green(db: &dyn SyntaxGroup, $params) -> $(&green_name) {
-                    let children: Vec<GreenId> = vec![$args];
-                    let width = children.iter().copied().map(|id|
-                        id.lookup_intern(db).width()).sum();
+                    let children = [$args];
+                    let width =
+                        children.into_iter().map(|id: GreenId| id.lookup_intern(db).width()).sum();
                     $(&green_name)(Arc::new(GreenNode {
                         kind: SyntaxKind::$(&name),
-                        details: GreenNodeDetails::Node { children, width },
+                        details: GreenNodeDetails::Node { children: children.into(), width },
                     }).intern(db))
                 }
             }
@@ -708,7 +708,7 @@ fn gen_struct_code(name: String, members: Vec<Member>, is_terminal: bool) -> rus
                 $(&green_name)(Arc::new(GreenNode {
                     kind: SyntaxKind::$(&name),
                     details: GreenNodeDetails::Node {
-                        children: vec![$args_for_missing],
+                        children: [$args_for_missing].into(),
                         width: TextWidth::default(),
                     },
                 }).intern(db))
@@ -716,7 +716,7 @@ fn gen_struct_code(name: String, members: Vec<Member>, is_terminal: bool) -> rus
             fn from_syntax_node(db: &dyn SyntaxGroup, node: SyntaxNode) -> Self {
                 let kind = node.kind(db);
                 assert_eq!(kind, SyntaxKind::$(&name), "Unexpected SyntaxKind {:?}. Expected {:?}.", kind, SyntaxKind::$(&name));
-                Self { children: node.get_children(db).into(), node }
+                Self { children: node.get_children(db), node }
             }
             fn cast(db: &dyn SyntaxGroup, node: SyntaxNode) -> Option<Self> {
                 let kind = node.kind(db);

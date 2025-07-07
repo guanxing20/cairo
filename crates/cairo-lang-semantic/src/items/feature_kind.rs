@@ -13,6 +13,7 @@ use cairo_lang_syntax::node::helpers::QueryAttrs;
 use cairo_lang_syntax::node::{Terminal, TypedStablePtr, TypedSyntaxNode, ast};
 use cairo_lang_utils::ordered_hash_set::OrderedHashSet;
 use cairo_lang_utils::try_extract_matches;
+use itertools::Itertools;
 use smol_str::SmolStr;
 
 use crate::SemanticDiagnostic;
@@ -38,9 +39,9 @@ impl FeatureKind {
         diagnostics: &mut DiagnosticsBuilder<SemanticDiagnostic>,
         attrs: &ast::AttributeList,
     ) -> Self {
-        let unstable_attrs = attrs.query_attr(db, UNSTABLE_ATTR);
-        let deprecated_attrs = attrs.query_attr(db, DEPRECATED_ATTR);
-        let internal_attrs = attrs.query_attr(db, INTERNAL_ATTR);
+        let unstable_attrs = attrs.query_attr(db, UNSTABLE_ATTR).collect_vec();
+        let deprecated_attrs = attrs.query_attr(db, DEPRECATED_ATTR).collect_vec();
+        let internal_attrs = attrs.query_attr(db, INTERNAL_ATTR).collect_vec();
         if unstable_attrs.is_empty() && deprecated_attrs.is_empty() && internal_attrs.is_empty() {
             return Self::Stable;
         };
@@ -192,17 +193,16 @@ pub fn extract_item_feature_config(
     syntax: &impl QueryAttrs,
     diagnostics: &mut SemanticDiagnostics,
 ) -> FeatureConfig {
-    let syntax_db = db.upcast();
     let mut config = FeatureConfig::default();
     process_feature_attr_kind(
-        syntax_db,
+        db,
         syntax,
         FEATURE_ATTR,
         || SemanticDiagnosticKind::UnsupportedFeatureAttrArguments,
         diagnostics,
         |value| {
             if let ast::Expr::String(value) = value {
-                config.allowed_features.insert(value.text(syntax_db));
+                config.allowed_features.insert(value.text(db));
                 true
             } else {
                 false
@@ -210,12 +210,12 @@ pub fn extract_item_feature_config(
         },
     );
     process_feature_attr_kind(
-        syntax_db,
+        db,
         syntax,
         ALLOW_ATTR,
         || SemanticDiagnosticKind::UnsupportedAllowAttrArguments,
         diagnostics,
-        |value| match value.as_syntax_node().get_text_without_trivia(syntax_db).as_str() {
+        |value| match value.as_syntax_node().get_text_without_trivia(db).as_str() {
             "deprecated" => {
                 config.allow_deprecated = true;
                 true
@@ -263,7 +263,7 @@ pub fn extract_feature_config(
     syntax: &impl QueryAttrs,
     diagnostics: &mut SemanticDiagnostics,
 ) -> FeatureConfig {
-    let defs_db = db.upcast();
+    let defs_db = db;
     let mut current_module_id = element_id.parent_module(defs_db);
     let crate_id = current_module_id.owning_crate(defs_db);
     let mut config_stack = vec![extract_item_feature_config(db, crate_id, syntax, diagnostics)];

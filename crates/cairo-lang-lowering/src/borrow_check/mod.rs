@@ -17,7 +17,7 @@ use crate::db::LoweringGroup;
 use crate::diagnostic::LoweringDiagnosticKind::*;
 use crate::diagnostic::{LoweringDiagnostic, LoweringDiagnostics, LoweringDiagnosticsBuilder};
 use crate::ids::{FunctionId, LocationId, SemanticFunctionIdEx};
-use crate::{BlockId, FlatLowered, MatchInfo, Statement, VarRemapping, VarUsage, VariableId};
+use crate::{BlockId, Lowered, MatchInfo, Statement, VarRemapping, VarUsage, VariableId};
 
 pub mod analysis;
 pub mod demand;
@@ -26,7 +26,7 @@ pub type BorrowCheckerDemand = Demand<VariableId, LocationId, PanicState>;
 pub struct BorrowChecker<'a> {
     db: &'a dyn LoweringGroup,
     diagnostics: &'a mut LoweringDiagnostics,
-    lowered: &'a FlatLowered,
+    lowered: &'a Lowered,
     potential_destruct_calls: PotentialDestructCalls,
     destruct_fn: TraitFunctionId,
     panic_destruct_fn: TraitFunctionId,
@@ -75,7 +75,7 @@ impl DropPosition {
         let location = location.lookup_intern(db);
         notes.push(DiagnosticNote::with_location(
             text.into(),
-            location.stable_location.diagnostic_location(db.upcast()),
+            location.stable_location.diagnostic_location(db),
         ));
         notes.extend(location.notes);
     }
@@ -97,6 +97,7 @@ impl DemandReporter<VariableId, PanicState> for BorrowChecker<'_> {
         let Err(drop_err) = var.droppable.clone() else {
             return;
         };
+        let db = self.db;
         let mut add_called_fn = |impl_id, function| {
             self.potential_destruct_calls.entry(block_id).or_default().push(
                 cairo_lang_semantic::FunctionLongId {
@@ -108,8 +109,8 @@ impl DemandReporter<VariableId, PanicState> for BorrowChecker<'_> {
                         generic_args: vec![],
                     },
                 }
-                .intern(self.db)
-                .lowered(self.db),
+                .intern(db)
+                .lowered(db),
             );
         };
         let destruct_err = match var.destruct_impl.clone() {
@@ -131,18 +132,17 @@ impl DemandReporter<VariableId, PanicState> for BorrowChecker<'_> {
             None
         };
 
-        let mut location = var.location.lookup_intern(self.db);
+        let mut location = var.location.lookup_intern(db);
         if let Some(drop_position) = opt_drop_position {
-            drop_position.enrich_as_notes(self.db, &mut location.notes);
+            drop_position.enrich_as_notes(db, &mut location.notes);
         }
-        let semantic_db = self.db.upcast();
         self.diagnostics.report_by_location(
             location
-                .with_note(DiagnosticNote::text_only(drop_err.format(semantic_db)))
-                .with_note(DiagnosticNote::text_only(destruct_err.format(semantic_db)))
+                .with_note(DiagnosticNote::text_only(drop_err.format(db.upcast())))
+                .with_note(DiagnosticNote::text_only(destruct_err.format(db.upcast())))
                 .maybe_with_note(
                     panic_destruct_err
-                        .map(|err| DiagnosticNote::text_only(err.format(semantic_db))),
+                        .map(|err| DiagnosticNote::text_only(err.format(db.upcast()))),
                 ),
             VariableNotDropped { drop_err, destruct_err },
         );
@@ -291,7 +291,7 @@ pub struct BorrowCheckResult {
 pub fn borrow_check(
     db: &dyn LoweringGroup,
     is_panic_destruct_fn: bool,
-    lowered: &FlatLowered,
+    lowered: &Lowered,
 ) -> BorrowCheckResult {
     if lowered.blocks.has_root().is_err() {
         return Default::default();
@@ -328,7 +328,7 @@ pub fn borrow_check(
 pub fn borrow_check_possible_withdraw_gas(
     db: &dyn LoweringGroup,
     location_id: LocationId,
-    lowered: &FlatLowered,
+    lowered: &Lowered,
     diagnostics: &mut LoweringDiagnostics,
 ) {
     let info = db.core_info();

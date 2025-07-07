@@ -7,6 +7,7 @@ use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::{QueryAttrs, is_single_arg_attr};
 use cairo_lang_syntax::node::{Terminal, TypedSyntaxNode};
 use cairo_lang_utils::{extract_matches, require, try_extract_matches};
+use itertools::Itertools;
 
 use super::consts::{CONSTRUCTOR_ATTR, EXTERNAL_ATTR, L1_HANDLER_ATTR};
 
@@ -21,17 +22,17 @@ pub trait ParamEx {
 }
 impl ParamEx for ast::Param {
     fn is_ref_param(&self, db: &dyn SyntaxGroup) -> bool {
-        let param_modifiers = self.modifiers(db).elements(db);
+        let param_modifiers = self.modifiers(db).elements(db).collect_array();
         // TODO(yuval): This works only if "ref" is the only modifier. If the expansion was at the
         // semantic level, we could just ask if it's a reference.
-        matches!(param_modifiers[..], [Modifier::Ref(_)])
+        matches!(param_modifiers, Some([Modifier::Ref(_)]))
     }
 
     fn is_mut_param(&self, db: &dyn SyntaxGroup) -> bool {
-        let param_modifiers = self.modifiers(db).elements(db);
+        let param_modifiers = self.modifiers(db).elements(db).collect_array();
         // TODO(yuval): This works only if "mut" is the only modifier. If the expansion was at the
         // semantic level, we could just ask if it's a reference.
-        matches!(param_modifiers[..], [Modifier::Mut(_)])
+        matches!(param_modifiers, Some([Modifier::Mut(_)]))
     }
 
     fn try_extract_snapshot(&self, db: &dyn SyntaxGroup) -> Option<ast::Expr> {
@@ -65,8 +66,9 @@ pub trait AstPathExtract {
 }
 impl AstPathExtract for ast::ExprPath {
     fn is_identifier(&self, db: &dyn SyntaxGroup, identifier: &str) -> bool {
-        let type_path_elements = self.elements(db);
-        let [ast::PathSegment::Simple(arg_segment)] = type_path_elements.as_slice() else {
+        let type_path_elements = self.segments(db).elements(db);
+        let Some([ast::PathSegment::Simple(arg_segment)]) = type_path_elements.collect_array()
+        else {
             return false;
         };
 
@@ -74,9 +76,9 @@ impl AstPathExtract for ast::ExprPath {
     }
 
     fn is_name_with_arg(&self, db: &dyn SyntaxGroup, name: &str, generic_arg: &str) -> bool {
-        let type_path_elements = self.elements(db);
-        let [ast::PathSegment::WithGenericArgs(path_segment_with_generics)] =
-            type_path_elements.as_slice()
+        let type_path_elements = self.segments(db).elements(db);
+        let Some([ast::PathSegment::WithGenericArgs(path_segment_with_generics)]) =
+            type_path_elements.collect_array()
         else {
             return false;
         };
@@ -85,7 +87,7 @@ impl AstPathExtract for ast::ExprPath {
             return false;
         }
         let args = path_segment_with_generics.generic_args(db).generic_args(db).elements(db);
-        let [ast::GenericArg::Unnamed(arg_expr)] = args.as_slice() else {
+        let Some([ast::GenericArg::Unnamed(arg_expr)]) = args.collect_array() else {
             return false;
         };
         let ast::GenericArgValue::Expr(arg_expr) = arg_expr.value(db) else {

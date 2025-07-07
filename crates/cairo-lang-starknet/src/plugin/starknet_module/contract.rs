@@ -1,14 +1,20 @@
 use cairo_lang_defs::patcher::RewriteNode;
 use cairo_lang_defs::plugin::{MacroPluginMetadata, PluginDiagnostic, PluginResult};
+use cairo_lang_defs::plugin_utils::not_legacy_macro_diagnostic;
+use cairo_lang_parser::macro_helpers::AsLegacyInlineMacro;
 use cairo_lang_plugins::plugins::HasItemsInCfgEx;
 use cairo_lang_starknet_classes::keccak::starknet_keccak;
+use cairo_lang_syntax::node::ast::OptionTypeClause;
 use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::{
-    GetIdentifier, PathSegmentEx, QueryAttrs, is_single_arg_attr,
+    BodyItems, GetIdentifier, PathSegmentEx, QueryAttrs, is_single_arg_attr,
 };
-use cairo_lang_syntax::node::{Terminal, TypedSyntaxNode, ast};
+use cairo_lang_syntax::node::ids::SyntaxStablePtrId;
+use cairo_lang_syntax::node::{Terminal, TypedStablePtr, TypedSyntaxNode, ast};
+use cairo_lang_utils::extract_matches;
 use const_format::formatcp;
 use indoc::formatdoc;
+use itertools::Itertools;
 use smol_str::SmolStr;
 
 use super::generation_data::{ContractGenerationData, StarknetModuleCommonGenerationData};
@@ -59,17 +65,25 @@ impl ComponentsGenerationData {
         diagnostics: &mut Vec<PluginDiagnostic>,
     ) -> RewriteNode {
         let mut has_component_impls = vec![];
-        for NestedComponent { component_path, storage_name, event_name, node } in
-            self.components.iter()
-        {
-            if !self.validate_component(db, diagnostics, storage_name, event_name) {
+        for NestedComponent { component_path, storage_name, event_name, node } in &self.components {
+            if !self.validate_component(db, diagnostics, storage_name, node, event_name) {
                 // Don't generate the code for the impl of HasComponent.
                 continue;
             }
             // TODO(yuval): consider supporting 2 components with the same name and different paths.
             // Currently it doesn't work as the name of the impl is the same.
-            let component_name = component_path.elements(db).last().unwrap().identifier_ast(db);
+            let Some(component_segment) = component_path.segments(db).elements(db).next_back()
+            else {
+                diagnostics.push(PluginDiagnostic::error_with_inner_span(
+                    db,
+                    node.stable_ptr(db),
+                    component_path.as_syntax_node(),
+                    "Component path must contain at least one segment.".into(),
+                ));
+                continue;
+            };
 
+            let component_name = component_segment.identifier_ast(db);
             let has_component_impl = RewriteNode::interpolate_patched(
                 &formatdoc!(
                     "impl HasComponentImpl_$component_name$ of \
@@ -122,14 +136,17 @@ impl ComponentsGenerationData {
         db: &dyn SyntaxGroup,
         diagnostics: &mut Vec<PluginDiagnostic>,
         storage_name: &ast::ExprPath,
+        component_macro: &ast::ItemInlineMacro,
         event_name: &ast::ExprPath,
     ) -> bool {
         let mut is_valid = true;
 
         let storage_name_syntax_node = storage_name.as_syntax_node();
         if !self.substorage_members.contains(&storage_name_syntax_node.get_text(db)) {
-            diagnostics.push(PluginDiagnostic::error(
-                storage_name.stable_ptr(db),
+            diagnostics.push(PluginDiagnostic::error_with_inner_span(
+                db,
+                component_macro.stable_ptr(db).untyped(),
+                storage_name.as_syntax_node(),
                 format!(
                     "`{0}` is not a substorage member in the contract's \
                      `{STORAGE_STRUCT_NAME}`.\nConsider adding to \
@@ -143,8 +160,10 @@ impl ComponentsGenerationData {
 
         let event_name_str = event_name.as_syntax_node().get_text_without_trivia(db);
         if !self.nested_event_variants.contains(&event_name_str.clone().into()) {
-            diagnostics.push(PluginDiagnostic::error(
-                event_name.stable_ptr(db),
+            diagnostics.push(PluginDiagnostic::error_with_inner_span(
+                db,
+                component_macro.stable_ptr(db).untyped(),
+                event_name.as_syntax_node(),
                 format!(
                     "`{event_name_str}` is not a nested event in the contract's \
                      `{EVENT_TYPE_NAME}` enum.\nConsider adding to the `{EVENT_TYPE_NAME}` \
@@ -265,7 +284,7 @@ fn handle_contract_item(
             }
         }
         ast::ModuleItem::ImplAlias(alias_ast) => {
-            let abi_attrs = alias_ast.query_attr(db, ABI_ATTR);
+            let abi_attrs = alias_ast.query_attr(db, ABI_ATTR).collect_vec();
             if abi_attrs.is_empty() {
                 return;
             }
@@ -311,18 +330,102 @@ pub(super) fn generate_contract_specific_code(
         handle_contract_item(db, diagnostics, &item, metadata, &mut generation_data);
     }
 
+    let test_class_hash_node = generate_test_class_hash(db, module_ast);
+
+    let deploy_function_node = generate_constructor_deploy_function(db, diagnostics, body);
+
+    generation_data.specific.test_config =
+        RewriteNode::new_modified(vec![test_class_hash_node, deploy_function_node]);
+
+    generation_data.into_rewrite_node(db, diagnostics)
+}
+
+/// Generates contract class hash for deploying contracts using cairo-test
+fn generate_test_class_hash(db: &dyn SyntaxGroup, module_ast: &ast::ItemModule) -> RewriteNode {
     let test_class_hash = format!(
         "0x{:x}",
         starknet_keccak(module_ast.as_syntax_node().get_text_without_trivia(db).as_bytes(),)
     );
 
-    generation_data.specific.test_config = RewriteNode::Text(formatdoc!(
+    RewriteNode::Text(formatdoc!(
         "#[cfg(target: 'test')]
             pub const TEST_CLASS_HASH: starknet::ClassHash = {test_class_hash}.try_into().unwrap();
 "
-    ));
+    ))
+}
 
-    generation_data.into_rewrite_node(db, diagnostics)
+/// Generate contract-specific deploy functions.
+fn generate_constructor_deploy_function(
+    db: &dyn SyntaxGroup,
+    diagnostics: &mut Vec<PluginDiagnostic>,
+    body: &ast::ModuleBody,
+) -> RewriteNode {
+    let mut deploy_function_node = RewriteNode::empty();
+
+    for item in body.iter_items(db) {
+        if let ast::ModuleItem::FreeFunction(func) = item {
+            if let Some(EntryPointKind::Constructor) =
+                EntryPointKind::try_from_function_with_body(db, diagnostics, &func)
+            {
+                let params = func.declaration(db).signature(db).parameters(db).elements(db);
+                let mut constructor_params = Vec::new();
+
+                for param in params.skip(1) {
+                    let name = param.name(db).text(db);
+                    let type_clause =
+                        extract_matches!(param.type_clause(db), OptionTypeClause::TypeClause);
+                    constructor_params.push((name, type_clause.ty(db)));
+                }
+
+                deploy_function_node = generate_deploy_function(db, constructor_params);
+
+                break;
+            }
+        }
+    }
+    deploy_function_node
+}
+
+/// Generates the deployment function for a contract.
+fn generate_deploy_function(
+    db: &dyn SyntaxGroup,
+    constructor_params: Vec<(SmolStr, ast::Expr)>,
+) -> RewriteNode {
+    let mut param_declarations = Vec::new();
+    let mut calldata_serialization = Vec::new();
+
+    for (name, ty) in constructor_params.clone() {
+        let type_text = ty.as_syntax_node().get_text_without_trivia(db);
+
+        param_declarations.push(format!("{name}: {type_text}"));
+        calldata_serialization
+            .push(format!("core::serde::Serde::<{type_text}>::serialize(@{name}, ref calldata);",));
+    }
+
+    let param_declarations_str = param_declarations.join(",\n");
+    let calldata_serialization_str = calldata_serialization.join("\n");
+
+    RewriteNode::Text(formatdoc!(
+        "
+        #[cfg(target: 'test')]
+        pub fn deploy_for_test(
+            class_hash: starknet::ClassHash,
+            deployment_params: starknet::deployment::DeploymentParams,
+            {param_declarations_str}
+        ) -> starknet::SyscallResult<(starknet::ContractAddress, core::array::Span<felt252>)> {{    
+            let mut calldata: core::array::Array<felt252> = core::array::ArrayTrait::new();
+
+            {calldata_serialization_str}
+
+            starknet::syscalls::deploy_syscall(
+                class_hash,
+                deployment_params.salt,
+                core::array::ArrayTrait::span(@calldata),
+                deployment_params.deploy_from_zero,
+            )
+        }}
+    "
+    ))
 }
 
 /// Handles a contract entrypoint function.
@@ -494,7 +597,7 @@ fn handle_embed_impl_alias(
     let has_generic_params = match alias_ast.generic_params(db) {
         ast::OptionWrappedGenericParamList::Empty(_) => false,
         ast::OptionWrappedGenericParamList::WrappedGenericParamList(generics) => {
-            !generics.generic_params(db).elements(db).is_empty()
+            generics.generic_params(db).elements(db).len() != 0
         }
     };
     if has_generic_params {
@@ -507,12 +610,12 @@ fn handle_embed_impl_alias(
         ));
         return;
     }
-    let elements = alias_ast.impl_path(db).elements(db);
-    let Some((impl_final_part, impl_module)) = elements.split_last() else {
+    let mut elements = alias_ast.impl_path(db).segments(db).elements(db);
+    let Some(impl_final_part) = elements.next_back() else {
         unreachable!("impl_path should have at least one segment")
     };
 
-    if !is_first_generic_arg_contract_state(db, impl_final_part) {
+    if !is_first_generic_arg_contract_state(db, &impl_final_part) {
         diagnostics.push(PluginDiagnostic::error(
             alias_ast.stable_ptr(db),
             format!(
@@ -524,7 +627,7 @@ fn handle_embed_impl_alias(
     }
     let impl_name = impl_final_part.identifier_ast(db);
     let impl_module = RewriteNode::interspersed(
-        impl_module.iter().map(RewriteNode::from_ast_trimmed),
+        elements.map(|e| RewriteNode::from_ast_trimmed(&e)),
         RewriteNode::text("::"),
     );
     data.generated_wrapper_functions.push(
@@ -558,7 +661,12 @@ pub fn handle_component_inline_macro(
     component_macro_ast: &ast::ItemInlineMacro,
     data: &mut ContractSpecificGenerationData,
 ) {
-    let macro_args = match component_macro_ast.arguments(db) {
+    let Some(legacy_component_macro_ast) = component_macro_ast.as_legacy_inline_macro(db) else {
+        diagnostics
+            .push(not_legacy_macro_diagnostic(component_macro_ast.as_syntax_node().stable_ptr(db)));
+        return;
+    };
+    let macro_args = match legacy_component_macro_ast.arguments(db) {
         ast::WrappedArgList::ParenthesizedArgList(args) => args.arguments(db),
         _ => {
             diagnostics.push(invalid_macro_diagnostic(db, component_macro_ast));
@@ -566,15 +674,36 @@ pub fn handle_component_inline_macro(
         }
     };
     let arguments = macro_args.elements(db);
-    let [path_arg, storage_arg, event_arg] = arguments.as_slice() else {
+    let Some([path_arg, storage_arg, event_arg]) = arguments.collect_array() else {
         diagnostics.push(invalid_macro_diagnostic(db, component_macro_ast));
         return;
     };
 
     let (Some(component_path), Some(storage_name), Some(event_name)) = (
-        try_extract_named_macro_argument(db, diagnostics, path_arg, "path", false),
-        try_extract_named_macro_argument(db, diagnostics, storage_arg, "storage", true),
-        try_extract_named_macro_argument(db, diagnostics, event_arg, "event", true),
+        try_extract_named_macro_argument(
+            db,
+            diagnostics,
+            &path_arg,
+            "path",
+            false,
+            component_macro_ast.stable_ptr(db),
+        ),
+        try_extract_named_macro_argument(
+            db,
+            diagnostics,
+            &storage_arg,
+            "storage",
+            true,
+            component_macro_ast.stable_ptr(db),
+        ),
+        try_extract_named_macro_argument(
+            db,
+            diagnostics,
+            &event_arg,
+            "event",
+            true,
+            component_macro_ast.stable_ptr(db),
+        ),
     ) else {
         return;
     };
@@ -646,6 +775,7 @@ fn try_extract_named_macro_argument(
     arg_ast: &ast::Arg,
     arg_name: &str,
     only_simple_identifier: bool,
+    component_macro_stable_ptr: impl Into<SyntaxStablePtrId>,
 ) -> Option<ast::ExprPath> {
     match arg_ast.arg_clause(db) {
         ast::ArgClause::Named(clause) if clause.name(db).text(db) == arg_name => {
@@ -654,12 +784,14 @@ fn try_extract_named_macro_argument(
                     if !only_simple_identifier {
                         return Some(path);
                     }
-                    let elements = path.elements(db);
+                    let mut elements = path.segments(db).elements(db);
                     if elements.len() != 1
-                        || !matches!(elements.last().unwrap(), ast::PathSegment::Simple(_))
+                        || !matches!(elements.next_back().unwrap(), ast::PathSegment::Simple(_))
                     {
-                        diagnostics.push(PluginDiagnostic::error(
-                            path.stable_ptr(db),
+                        diagnostics.push(PluginDiagnostic::error_with_inner_span(
+                            db,
+                            component_macro_stable_ptr,
+                            path.as_syntax_node(),
                             format!(
                                 "Component macro argument `{arg_name}` must be a simple \
                                  identifier.",
@@ -670,8 +802,10 @@ fn try_extract_named_macro_argument(
                     Some(path)
                 }
                 value => {
-                    diagnostics.push(PluginDiagnostic::error(
-                        value.stable_ptr(db),
+                    diagnostics.push(PluginDiagnostic::error_with_inner_span(
+                        db,
+                        component_macro_stable_ptr,
+                        value.as_syntax_node(),
                         format!(
                             "Component macro argument `{arg_name}` must be a path expression.",
                         ),
@@ -681,9 +815,11 @@ fn try_extract_named_macro_argument(
             }
         }
         _ => {
-            diagnostics.push(PluginDiagnostic::error(
-                arg_ast.stable_ptr(db),
-                format!("Invalid component macro argument. Expected `{0}: <value>`", arg_name),
+            diagnostics.push(PluginDiagnostic::error_with_inner_span(
+                db,
+                component_macro_stable_ptr,
+                arg_ast.as_syntax_node(),
+                format!("Invalid component macro argument. Expected `{arg_name}: <value>`"),
             ));
             None
         }

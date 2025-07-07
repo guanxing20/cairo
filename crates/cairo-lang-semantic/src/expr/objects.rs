@@ -91,6 +91,7 @@ pub struct StatementExpr {
 pub struct StatementLet {
     pub pattern: PatternId,
     pub expr: ExprId,
+    pub else_clause: Option<ExprId>,
     #[hide_field_debug_with_db]
     #[dont_rewrite]
     pub stable_ptr: ast::StatementPtr,
@@ -368,7 +369,7 @@ impl<'a> DebugWithDb<ExprFormatter<'a>> for ExprVarMemberPath {
         match self {
             ExprVarMemberPath::Var(var) => var.fmt(f, db),
             ExprVarMemberPath::Member { parent, member_id, .. } => {
-                write!(f, "{:?}::{}", parent.debug(db), member_id.name(db.db.upcast()))
+                write!(f, "{:?}::{}", parent.debug(db), member_id.name(db.db))
             }
         }
     }
@@ -420,7 +421,7 @@ pub struct ExprMatch {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, DebugWithDb, SemanticObject)]
 #[debug_db(ExprFormatter<'a>)]
 pub struct ExprIf {
-    pub condition: Condition,
+    pub conditions: Vec<Condition>,
     pub if_block: ExprId,
     pub else_block: Option<ExprId>,
     pub ty: semantic::TypeId,

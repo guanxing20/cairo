@@ -1,7 +1,7 @@
 use cairo_lang_debug::DebugWithDb;
 use cairo_lang_defs::ids::{FunctionWithBodyId, ModuleId, ModuleItemId};
 use cairo_lang_diagnostics::ToOption;
-use cairo_lang_filesystem::db::{AsFilesGroupMut, CrateConfiguration, FilesGroupEx};
+use cairo_lang_filesystem::db::{CrateConfiguration, FilesGroupEx};
 use cairo_lang_filesystem::ids::{CrateId, Directory, FileLongId};
 use cairo_lang_utils::{Intern, extract_matches};
 use indoc::indoc;
@@ -43,14 +43,14 @@ fn test_resolve_path() {
         "Some(Block(ExprBlock { statements: [Expr(StatementExpr { expr: \
          FunctionCall(ExprFunctionCall { function: test::bar::<(core::felt252, Q)>, args: \
          [Value(Var(ParamId(test::value)))], coupon_arg: None, ty: test::S::<()> }) }), \
-         Let(StatementLet { pattern: Variable(_c), expr: Var(ParamId(test::b)) })], tail: None, \
-         ty: () }))"
+         Let(StatementLet { pattern: Variable(_c), expr: Var(ParamId(test::b)), else_clause: None \
+         })], tail: None, ty: () }))"
     );
 }
 
 fn set_file_content(db: &mut SemanticDatabaseForTesting, path: &str, content: &str) {
     let file_id = FileLongId::OnDisk(path.into()).intern(db);
-    db.as_files_group_mut().override_file_content(file_id, Some(content.into()));
+    db.override_file_content(file_id, Some(content.into()));
 }
 
 #[test]
