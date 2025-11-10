@@ -1,6 +1,6 @@
+use cairo_lang_test_utils::test;
 use num_bigint::ToBigInt;
 use pretty_assertions::assert_eq;
-use test_log::test;
 
 use super::InstructionRepr;
 use crate::assembler::{ApUpdate, FpUpdate, Op1Addr, Opcode, OpcodeExtension, PcUpdate, Res};
@@ -8,7 +8,7 @@ use crate::casm;
 use crate::inline::CasmContext;
 use crate::operand::Register;
 
-/// Takes a casm instruction, which can be constructed using the macro casm!, and
+/// Takes a CASM instruction, which can be constructed using the macro casm!, and
 /// returns its assembled representation.
 fn assemble_instruction(mut casm: CasmContext) -> InstructionRepr {
     casm.instructions.remove(0).assemble()

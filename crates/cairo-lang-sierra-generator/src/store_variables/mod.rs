@@ -11,10 +11,11 @@ use cairo_lang_sierra::extensions::duplicate::DupLibfunc;
 use cairo_lang_sierra::extensions::lib_func::{LibfuncSignature, ParamSignature, SierraApChange};
 use cairo_lang_sierra::ids::ConcreteLibfuncId;
 use cairo_lang_sierra::program::{GenBranchInfo, GenBranchTarget, GenStatement};
+use cairo_lang_utils::extract_matches;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::ordered_hash_set::OrderedHashSet;
-use cairo_lang_utils::{LookupIntern, extract_matches};
 use itertools::zip_eq;
+use salsa::Database;
 use sierra::extensions::NamedLibfunc;
 use sierra::extensions::function_call::{CouponCallLibfunc, FunctionCallLibfunc};
 use state::{
@@ -33,11 +34,6 @@ use crate::utils::{
 /// space.
 pub type LocalVariables = OrderedHashMap<sierra::ids::VarId, sierra::ids::VarId>;
 
-/// Information about a libfunc, required by the `store_variables` module.
-pub struct LibfuncInfo {
-    pub signature: LibfuncSignature,
-}
-
 /// Automatically adds store_temp() statements to the given list of [pre_sierra::Statement].
 /// For example, a deferred reference (e.g., `[ap] + [fp - 3]`) needs to be stored as a temporary
 /// or local variable before being included in additional computation.
@@ -46,21 +42,23 @@ pub struct LibfuncInfo {
 ///
 /// `local_variables` is a map from variables that should be stored as local to their allocated
 /// space.
-pub fn add_store_statements<GetLibfuncSignature>(
-    db: &dyn SierraGenGroup,
-    statements: Vec<pre_sierra::StatementWithLocation>,
-    get_lib_func_signature: &GetLibfuncSignature,
+pub fn add_store_statements<'db, GetLibfuncSignature>(
+    db: &'db dyn Database,
+    statements: Vec<pre_sierra::StatementWithLocation<'db>>,
+    get_libfunc_signature: &GetLibfuncSignature,
     local_variables: LocalVariables,
     params: &[sierra::program::Param],
-) -> Vec<pre_sierra::StatementWithLocation>
+) -> Vec<pre_sierra::StatementWithLocation<'db>>
 where
-    GetLibfuncSignature: Fn(ConcreteLibfuncId) -> LibfuncInfo,
+    GetLibfuncSignature: Fn(ConcreteLibfuncId) -> &'db LibfuncSignature,
 {
     let mut duplicated_vars: OrderedHashSet<cairo_lang_sierra::ids::VarId> = Default::default();
     for stmt in &statements {
         match &stmt.statement {
             pre_sierra::Statement::Sierra(GenStatement::Invocation(invocation)) => {
-                if invocation.libfunc_id.lookup_intern(db).generic_id.0 == DupLibfunc::STR_ID {
+                if db.lookup_concrete_lib_func(&invocation.libfunc_id).generic_id.0
+                    == DupLibfunc::STR_ID
+                {
                     for arg in &invocation.args {
                         duplicated_vars.insert(arg.clone());
                     }
@@ -94,33 +92,33 @@ where
     // Go over the statements, restarting whenever we see a branch or a label.
     for statement in statements {
         let prev_len = handler.result.len();
-        let location = statement.location.clone();
-        state_opt = handler.handle_statement(state_opt, statement, get_lib_func_signature);
+        let location = statement.location;
+        state_opt = handler.handle_statement(state_opt, statement, get_libfunc_signature);
         for statement in &mut handler.result[prev_len..] {
-            statement.set_location(location.clone())
+            statement.set_location(location)
         }
     }
     handler.finalize(state_opt)
 }
 
-struct AddStoreVariableStatements<'a> {
-    db: &'a dyn SierraGenGroup,
+struct AddStoreVariableStatements<'db> {
+    db: &'db dyn Database,
     local_variables: LocalVariables,
     duplicated_vars: OrderedHashSet<sierra::ids::VarId>,
     /// A list of output statements (the original statement, together with the added statements,
     /// such as "store_temp").
-    result: Vec<pre_sierra::StatementWithLocation>,
+    result: Vec<pre_sierra::StatementWithLocation<'db>>,
     /// A map from [LabelId](pre_sierra::LabelId) to the known state (so far).
     ///
     /// For every branch that does not continue to the next statement, the current known variables
     /// state is added to the map. When the label is visited, it is merged with the known variables
     /// state, and removed from the map.
-    future_states: OrderedHashMap<pre_sierra::LabelId, VariablesState>,
+    future_states: OrderedHashMap<pre_sierra::LabelId<'db>, VariablesState>,
 }
-impl<'a> AddStoreVariableStatements<'a> {
+impl<'db> AddStoreVariableStatements<'db> {
     /// Constructs a new [AddStoreVariableStatements] object.
     fn new(
-        db: &'a dyn SierraGenGroup,
+        db: &'db dyn Database,
         local_variables: LocalVariables,
         duplicated_vars: OrderedHashSet<sierra::ids::VarId>,
     ) -> Self {
@@ -135,24 +133,23 @@ impl<'a> AddStoreVariableStatements<'a> {
 
     /// Handles a single statement, including adding required store statements and the statement
     /// itself.
-    fn handle_statement<GetLibfuncInfo>(
+    fn handle_statement<GetLibfuncSignature>(
         &mut self,
         state_opt: Option<VariablesState>,
-        statement: pre_sierra::StatementWithLocation,
-        get_lib_func_signature: &GetLibfuncInfo,
+        statement: pre_sierra::StatementWithLocation<'db>,
+        get_libfunc_signature: &GetLibfuncSignature,
     ) -> Option<VariablesState>
     where
-        GetLibfuncInfo: Fn(ConcreteLibfuncId) -> LibfuncInfo,
+        GetLibfuncSignature: Fn(ConcreteLibfuncId) -> &'db LibfuncSignature,
     {
         let mut state_opt = state_opt;
         match &statement.statement {
             pre_sierra::Statement::Sierra(GenStatement::Invocation(invocation)) => {
                 let libfunc_id = invocation.libfunc_id.clone();
-                let libfunc_info = get_lib_func_signature(libfunc_id.clone());
-                let signature = libfunc_info.signature;
+                let signature = get_libfunc_signature(libfunc_id.clone());
                 let mut state = state_opt.unwrap_or_default();
 
-                let libfunc_long_id = libfunc_id.lookup_intern(self.db);
+                let libfunc_long_id = self.db.lookup_concrete_lib_func(&libfunc_id);
                 let arg_states = match libfunc_long_id.generic_id.0.as_str() {
                     FunctionCallLibfunc::STR_ID | CouponCallLibfunc::STR_ID => {
                         // The arguments were already stored using `push_values`.
@@ -170,13 +167,16 @@ impl<'a> AddStoreVariableStatements<'a> {
                     [GenBranchInfo { target: GenBranchTarget::Fallthrough, results }] => {
                         // A simple invocation.
                         let branch_signature = &signature.branch_signatures[0];
-                        match branch_signature.ap_change {
+                        match &branch_signature.ap_change {
                             SierraApChange::Unknown => {
                                 // If the ap-change is unknown, variables that will be revoked
                                 // otherwise should be stored as locals.
                                 self.store_variables_as_locals(&mut state);
                             }
                             SierraApChange::BranchAlign | SierraApChange::Known { .. } => {}
+                            SierraApChange::FunctionCall(id) => {
+                                unreachable!("Function ap-change for `{id}` missing.")
+                            }
                         }
 
                         state.register_outputs(
@@ -197,12 +197,12 @@ impl<'a> AddStoreVariableStatements<'a> {
                         // is merged into `fallthrough_state`.
                         let mut fallthrough_state: Option<VariablesState> = None;
                         for (branch, branch_signature) in
-                            zip_eq(&invocation.branches, signature.branch_signatures)
+                            zip_eq(&invocation.branches, &signature.branch_signatures)
                         {
                             let mut state_at_branch = state.clone();
                             state_at_branch.register_outputs(
                                 &branch.results,
-                                &branch_signature,
+                                branch_signature,
                                 &invocation.args,
                                 &arg_states,
                             );
@@ -494,7 +494,10 @@ impl<'a> AddStoreVariableStatements<'a> {
         }
     }
 
-    fn finalize(self, state_opt: Option<VariablesState>) -> Vec<pre_sierra::StatementWithLocation> {
+    fn finalize(
+        self,
+        state_opt: Option<VariablesState>,
+    ) -> Vec<pre_sierra::StatementWithLocation<'db>> {
         assert!(
             state_opt.is_none(),
             "Internal compiler error: Found a reachable statement at the end of the function."
@@ -574,7 +577,7 @@ impl<'a> AddStoreVariableStatements<'a> {
     /// If it refers to a label, `state` is merged into `future_states`.
     fn add_future_state(
         &mut self,
-        target: &GenBranchTarget<pre_sierra::LabelId>,
+        target: &GenBranchTarget<pre_sierra::LabelId<'db>>,
         state: VariablesState,
         fallthrough_state: &mut Option<VariablesState>,
     ) {

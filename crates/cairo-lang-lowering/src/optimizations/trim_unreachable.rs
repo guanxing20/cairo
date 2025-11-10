@@ -2,14 +2,15 @@
 #[path = "trim_unreachable_test.rs"]
 mod test;
 
+use cairo_lang_semantic::items::enm::EnumSemantic;
 use cairo_lang_semantic::{ConcreteTypeId, TypeLongId};
+use salsa::Database;
 
-use crate::db::LoweringGroup;
 use crate::{BlockEnd, BlockId, Lowered, MatchEnumInfo, MatchInfo, VarUsage, VariableId};
 
 /// Trims unreachable code.
 /// The unreachable code is detected by the introduction of an enum with 0 variants.
-pub fn trim_unreachable(db: &dyn LoweringGroup, lowered: &mut Lowered) {
+pub fn trim_unreachable<'db>(db: &'db dyn Database, lowered: &mut Lowered<'db>) {
     if lowered.blocks.is_empty() {
         return;
     }
@@ -19,11 +20,10 @@ pub fn trim_unreachable(db: &dyn LoweringGroup, lowered: &mut Lowered) {
     // Helper function to process a variable.
     // Checks if the variable is an enum with zero variants.
     // If it is, a fix is added to the list of fixes, and the function returns `true`,
-    // Otherwise, it returns `false.
+    // Otherwise, it returns `false`.
     let mut handle_var = |var_id: &VariableId, introduction_block| {
         let variable = &lowered.variables[*var_id];
-        let TypeLongId::Concrete(ConcreteTypeId::Enum(concrete_enum_id)) =
-            db.lookup_intern_type(variable.ty)
+        let TypeLongId::Concrete(ConcreteTypeId::Enum(concrete_enum_id)) = variable.ty.long(db)
         else {
             return false;
         };
@@ -58,7 +58,7 @@ pub fn trim_unreachable(db: &dyn LoweringGroup, lowered: &mut Lowered) {
         block.statements.truncate(0);
         block.end = BlockEnd::Match {
             info: MatchInfo::Enum(MatchEnumInfo {
-                concrete_enum_id,
+                concrete_enum_id: *concrete_enum_id,
                 input: VarUsage { var_id: output, location },
                 arms: vec![],
                 location,

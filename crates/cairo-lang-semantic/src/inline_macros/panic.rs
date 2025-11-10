@@ -9,17 +9,17 @@ use cairo_lang_defs::plugin_utils::{
 };
 use cairo_lang_parser::macro_helpers::AsLegacyInlineMacro;
 use cairo_lang_syntax::node::ast::{Arg, WrappedArgList};
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{TypedSyntaxNode, ast};
 use cairo_lang_utils::{require, try_extract_matches};
 use indoc::{formatdoc, indoc};
+use salsa::Database;
 
-/// Try to generate a simple panic handlic code.
+/// Try to generate a simple panic handling code.
 /// Return `Some(())` if successful and updates the builder if successful.
 fn try_handle_simple_panic(
-    db: &dyn SyntaxGroup,
+    db: &dyn Database,
     builder: &mut PatchBuilder<'_>,
-    arguments: &[Arg],
+    arguments: &[Arg<'_>],
 ) -> Option<()> {
     let panic_str = match arguments {
         [] => {
@@ -48,12 +48,12 @@ impl NamedPlugin for PanicMacro {
     const NAME: &'static str = "panic";
 }
 impl InlineMacroExprPlugin for PanicMacro {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        syntax: &ast::ExprInlineMacro,
+        db: &'db dyn Database,
+        syntax: &ast::ExprInlineMacro<'db>,
         _metadata: &MacroPluginMetadata<'_>,
-    ) -> InlinePluginResult {
+    ) -> InlinePluginResult<'db> {
         let Some(legacy_inline_macro) = syntax.as_legacy_inline_macro(db) else {
             return InlinePluginResult::diagnostic_only(not_legacy_macro_diagnostic(
                 syntax.as_syntax_node().stable_ptr(db),
@@ -104,11 +104,12 @@ impl InlineMacroExprPlugin for PanicMacro {
         let (content, code_mappings) = builder.build();
         InlinePluginResult {
             code: Some(PluginGeneratedFile {
-                name: format!("{}_macro", Self::NAME).into(),
+                name: format!("{}_macro", Self::NAME),
                 content,
                 code_mappings,
                 aux_data: None,
                 diagnostics_note: Default::default(),
+                is_unhygienic: false,
             }),
             diagnostics: vec![],
         }

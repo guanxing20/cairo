@@ -1,7 +1,7 @@
-use std::sync::Arc;
-
+use cairo_lang_filesystem::db::FilesGroup;
 use cairo_lang_filesystem::span::{FileSummary, TextPosition, TextSpan, TextWidth};
 use itertools::repeat_n;
+use salsa::Database;
 
 use crate::DiagnosticLocation;
 
@@ -11,8 +11,8 @@ mod test;
 
 /// Given a diagnostic location, returns a string with the location marks.
 pub fn get_location_marks(
-    db: &dyn cairo_lang_filesystem::db::FilesGroup,
-    location: &DiagnosticLocation,
+    db: &dyn Database,
+    location: &DiagnosticLocation<'_>,
     skip_middle_lines: bool,
 ) -> String {
     let span = &location.span;
@@ -34,10 +34,7 @@ pub fn get_location_marks(
 }
 
 /// Given a single line diagnostic location, returns a string with the location marks.
-fn get_single_line_location_marks(
-    db: &dyn cairo_lang_filesystem::db::FilesGroup,
-    location: &DiagnosticLocation,
-) -> String {
+fn get_single_line_location_marks(db: &dyn Database, location: &DiagnosticLocation<'_>) -> String {
     // TODO(ilya, 10/10/2023): Handle locations which spread over a few lines.
     let content = db.file_content(location.file_id).expect("File missing from DB.");
     let summary = db.file_summary(location.file_id).expect("File missing from DB.");
@@ -52,13 +49,12 @@ fn get_single_line_location_marks(
         None => summary.last_offset,
     };
 
-    let first_line_span = TextSpan { start: first_line_start, end: first_line_end };
-    let mut res = first_line_span.take(&content).to_string();
+    let first_line_span = TextSpan::new(first_line_start, first_line_end);
+    let mut res = first_line_span.take(content).to_string();
     res.push('\n');
     res.extend(repeat_n(' ', col));
-    let subspan_in_first_line =
-        TextSpan { start: span.start, end: std::cmp::min(first_line_end, span.end) };
-    let marker_length = subspan_in_first_line.n_chars(&content);
+    let subspan_in_first_line = TextSpan::new(span.start, std::cmp::min(first_line_end, span.end));
+    let marker_length = subspan_in_first_line.n_chars(content);
     // marker_length can be 0 if the span is empty.
     res.extend(repeat_n('^', std::cmp::max(marker_length, 1)));
 
@@ -67,8 +63,8 @@ fn get_single_line_location_marks(
 
 /// Given a multiple lines diagnostic location, returns a string with the location marks.
 fn get_multiple_lines_location_marks(
-    db: &dyn cairo_lang_filesystem::db::FilesGroup,
-    location: &DiagnosticLocation,
+    db: &dyn Database,
+    location: &DiagnosticLocation<'_>,
     skip_middle_lines: bool,
 ) -> String {
     let content = db.file_content(location.file_id).expect("File missing from DB.");
@@ -79,7 +75,7 @@ fn get_multiple_lines_location_marks(
         .start
         .position_in_file(db, location.file_id)
         .expect("Failed to find location in file.");
-    let mut res = get_line_content(summary.clone(), first_line_idx, content.clone(), true);
+    let mut res = get_line_content(summary, first_line_idx, content, true);
     res += " _";
     res.extend(repeat_n('_', col));
     res += "^\n";
@@ -89,7 +85,7 @@ fn get_multiple_lines_location_marks(
     const LINES_TO_REPLACE_MIDDLE: usize = 3;
     if !skip_middle_lines || first_line_idx + LINES_TO_REPLACE_MIDDLE > last_line_idx {
         for row_index in first_line_idx + 1..=last_line_idx - 1 {
-            res += &get_line_content(summary.clone(), row_index, content.clone(), false);
+            res += &get_line_content(summary, row_index, content, false);
         }
     } else {
         res += "| ...\n";
@@ -104,9 +100,9 @@ fn get_multiple_lines_location_marks(
 }
 
 fn get_line_content(
-    summary: Arc<FileSummary>,
+    summary: &FileSummary,
     row_index: usize,
-    content: Arc<str>,
+    content: &str,
     first_line: bool,
 ) -> String {
     let line_start = summary.line_offsets[row_index];
@@ -115,6 +111,6 @@ fn get_line_content(
         None => summary.last_offset,
     };
 
-    let line_span = TextSpan { start: line_start, end: line_end };
-    format!("{}{}\n", if first_line { "  " } else { "| " }, line_span.take(&content))
+    let line_span = TextSpan::new(line_start, line_end);
+    format!("{}{}\n", if first_line { "  " } else { "| " }, line_span.take(content))
 }

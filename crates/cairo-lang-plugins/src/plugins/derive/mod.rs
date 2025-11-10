@@ -2,12 +2,13 @@ use cairo_lang_defs::patcher::{PatchBuilder, RewriteNode};
 use cairo_lang_defs::plugin::{
     MacroPlugin, MacroPluginMetadata, PluginDiagnostic, PluginGeneratedFile, PluginResult,
 };
+use cairo_lang_filesystem::ids::SmolStrId;
 use cairo_lang_syntax::attribute::structured::{
     AttributeArg, AttributeArgVariant, AttributeStructurize,
 };
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::QueryAttrs;
 use cairo_lang_syntax::node::{TypedSyntaxNode, ast};
+use salsa::Database;
 
 use super::utils::PluginTypeInfo;
 use crate::plugins::DOC_ATTR;
@@ -28,12 +29,12 @@ pub struct DerivePlugin;
 const DERIVE_ATTR: &str = "derive";
 
 impl MacroPlugin for DerivePlugin {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        item_ast: ast::ModuleItem,
+        db: &'db dyn Database,
+        item_ast: ast::ModuleItem<'db>,
         metadata: &MacroPluginMetadata<'_>,
-    ) -> PluginResult {
+    ) -> PluginResult<'db> {
         generate_derive_code_for_type(
             db,
             metadata,
@@ -56,32 +57,32 @@ impl MacroPlugin for DerivePlugin {
         )
     }
 
-    fn declared_attributes(&self) -> Vec<String> {
-        vec![DERIVE_ATTR.to_string(), default::DEFAULT_ATTR.to_string()]
+    fn declared_attributes<'db>(&self, db: &'db dyn Database) -> Vec<SmolStrId<'db>> {
+        vec![SmolStrId::from(db, DERIVE_ATTR), SmolStrId::from(db, default::DEFAULT_ATTR)]
     }
 
-    fn declared_derives(&self) -> Vec<String> {
+    fn declared_derives<'db>(&self, db: &'db dyn Database) -> Vec<SmolStrId<'db>> {
         vec![
-            "Copy".to_string(),
-            "Drop".to_string(),
-            "Clone".to_string(),
-            "Debug".to_string(),
-            "Default".to_string(),
-            "Destruct".to_string(),
-            "Hash".to_string(),
-            "PanicDestruct".to_string(),
-            "PartialEq".to_string(),
-            "Serde".to_string(),
+            SmolStrId::from(db, "Copy"),
+            SmolStrId::from(db, "Drop"),
+            SmolStrId::from(db, "Clone"),
+            SmolStrId::from(db, "Debug"),
+            SmolStrId::from(db, "Default"),
+            SmolStrId::from(db, "Destruct"),
+            SmolStrId::from(db, "Hash"),
+            SmolStrId::from(db, "PanicDestruct"),
+            SmolStrId::from(db, "PartialEq"),
+            SmolStrId::from(db, "Serde"),
         ]
     }
 }
 
 /// Adds an implementation for all requested derives for the type.
-fn generate_derive_code_for_type(
-    db: &dyn SyntaxGroup,
+fn generate_derive_code_for_type<'db>(
+    db: &'db dyn Database,
     metadata: &MacroPluginMetadata<'_>,
-    info: PluginTypeInfo,
-) -> PluginResult {
+    info: PluginTypeInfo<'db>,
+) -> PluginResult<'db> {
     let mut diagnostics = vec![];
     let mut builder = PatchBuilder::new(db, &info.attributes);
     for attr in info.attributes.query_attr(db, DERIVE_ATTR) {
@@ -105,8 +106,9 @@ fn generate_derive_code_for_type(
             };
 
             let derived = derived_path.as_syntax_node().get_text_without_trivia(db);
-            if let Some(mut code) = match derived.as_str() {
-                "Copy" | "Drop" => Some(get_empty_impl(&derived, &info)),
+            let derived_text = derived.long(db).as_str();
+            if let Some(mut code) = match derived_text {
+                "Copy" | "Drop" => Some(get_empty_impl(derived_text, &info)),
                 "Clone" => Some(clone::handle_clone(&info)),
                 "Debug" => Some(debug::handle_debug(&info)),
                 "Default" => default::handle_default(db, &info, &derived_path, &mut diagnostics),
@@ -119,15 +121,19 @@ fn generate_derive_code_for_type(
                     if !metadata.declared_derives.contains(&derived) {
                         diagnostics.push(PluginDiagnostic::error(
                             derived_path.stable_ptr(db),
-                            format!("Unknown derive `{derived}` - a plugin might be missing."),
+                            format!(
+                                "Unknown derive `{derived_text}` - a plugin might be missing.",
+                            ),
                         ));
                     }
                     None
                 }
             } {
                 if let Some(doc_attr) = info.attributes.find_attr(db, DOC_ATTR) {
-                    code =
-                        format!("{}\n{code}", doc_attr.as_syntax_node().get_text_without_trivia(db))
+                    code = format!(
+                        "{}\n{code}",
+                        doc_attr.as_syntax_node().get_text_without_trivia(db).long(db)
+                    )
                 }
                 builder.add_modified(RewriteNode::mapped_text(code, db, &derived_path));
             }
@@ -141,13 +147,14 @@ fn generate_derive_code_for_type(
             content,
             aux_data: None,
             diagnostics_note: Default::default(),
+            is_unhygienic: false,
         }),
         diagnostics,
         remove_original_item: false,
     }
 }
 
-fn get_empty_impl(derived_trait: &str, info: &PluginTypeInfo) -> String {
+fn get_empty_impl(derived_trait: &str, info: &PluginTypeInfo<'_>) -> String {
     let derive_trait = format!("core::traits::{derived_trait}");
     format!("{};\n", info.impl_header(&derive_trait, &[&derive_trait]))
 }

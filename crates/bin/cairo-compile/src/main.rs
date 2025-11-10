@@ -7,6 +7,10 @@ use cairo_lang_compiler::{CompilerConfig, compile_cairo_project_at_path};
 use cairo_lang_utils::logging::init_logging;
 use clap::Parser;
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// Options for the `inlining-strategy` arguments.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
 pub enum InliningStrategy {
@@ -38,7 +42,7 @@ struct Args {
     single_file: bool,
     /// The output file name (default: stdout).
     output: Option<String>,
-    /// Replaces sierra ids with human-readable ones.
+    /// Replaces Sierra IDs with human-readable ones.
     #[arg(short, long, default_value_t = false)]
     replace_ids: bool,
     /// Overrides inlining behavior.
@@ -47,7 +51,7 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    init_logging(log::LevelFilter::Off);
+    init_logging(tracing::Level::ERROR);
     log::info!("Starting Cairo compilation.");
 
     let args = Args::parse();

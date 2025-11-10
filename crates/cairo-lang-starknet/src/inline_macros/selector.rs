@@ -6,8 +6,8 @@ use cairo_lang_defs::plugin::{
 use cairo_lang_defs::plugin_utils::{PluginResultTrait, not_legacy_macro_diagnostic};
 use cairo_lang_parser::macro_helpers::AsLegacyInlineMacro;
 use cairo_lang_starknet_classes::keccak::starknet_keccak;
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{TypedStablePtr, TypedSyntaxNode, ast};
+use salsa::Database;
 
 /// Macro for expanding a selector to a string literal.
 #[derive(Debug, Default)]
@@ -16,12 +16,12 @@ impl NamedPlugin for SelectorMacro {
     const NAME: &'static str = "selector";
 }
 impl InlineMacroExprPlugin for SelectorMacro {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        syntax: &ast::ExprInlineMacro,
+        db: &'db dyn Database,
+        syntax: &ast::ExprInlineMacro<'db>,
         _metadata: &MacroPluginMetadata<'_>,
-    ) -> InlinePluginResult {
+    ) -> InlinePluginResult<'db> {
         let Some(legacy_inline_macro) = syntax.as_legacy_inline_macro(db) else {
             return InlinePluginResult::diagnostic_only(not_legacy_macro_diagnostic(
                 syntax.as_syntax_node().stable_ptr(db),
@@ -51,6 +51,7 @@ impl InlineMacroExprPlugin for SelectorMacro {
                 code_mappings: vec![],
                 aux_data: None,
                 diagnostics_note: Default::default(),
+                is_unhygienic: false,
             }),
             diagnostics: vec![],
         }

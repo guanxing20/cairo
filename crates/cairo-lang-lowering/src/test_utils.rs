@@ -1,68 +1,50 @@
 use std::sync::{LazyLock, Mutex};
 
 use cairo_lang_debug::DebugWithDb;
-use cairo_lang_defs::db::{DefsDatabase, DefsGroup, init_defs_group, try_ext_as_virtual_impl};
-use cairo_lang_filesystem::db::{
-    ExternalFiles, FilesDatabase, FilesGroup, init_dev_corelib, init_files_group,
-};
+use cairo_lang_defs::db::{init_defs_group, init_external_files};
+use cairo_lang_filesystem::db::{init_dev_corelib, init_files_group};
 use cairo_lang_filesystem::detect::detect_corelib;
-use cairo_lang_filesystem::ids::VirtualFile;
-use cairo_lang_parser::db::{ParserDatabase, ParserGroup};
-use cairo_lang_semantic::db::{
-    PluginSuiteInput, SemanticDatabase, SemanticGroup, init_semantic_group,
-};
+use cairo_lang_semantic::db::{PluginSuiteInput, init_semantic_group};
 use cairo_lang_semantic::inline_macros::get_default_plugin_suite;
-use cairo_lang_syntax::node::db::{SyntaxDatabase, SyntaxGroup};
-use cairo_lang_utils::Upcast;
+use salsa::Database;
 
 use crate::Lowered;
-use crate::db::{LoweringDatabase, LoweringGroup, UseApproxCodeSizeEstimator, init_lowering_group};
+use crate::db::init_lowering_group;
 use crate::fmt::LoweredFormatter;
+use crate::optimizations::config::Optimizations;
 use crate::utils::InliningStrategy;
 
-impl UseApproxCodeSizeEstimator for LoweringDatabaseForTesting {}
-
-#[salsa::database(
-    LoweringDatabase,
-    SemanticDatabase,
-    DefsDatabase,
-    ParserDatabase,
-    SyntaxDatabase,
-    FilesDatabase
-)]
+#[salsa::db]
+#[derive(Clone)]
 pub struct LoweringDatabaseForTesting {
     storage: salsa::Storage<LoweringDatabaseForTesting>,
 }
+#[salsa::db]
 impl salsa::Database for LoweringDatabaseForTesting {}
-impl ExternalFiles for LoweringDatabaseForTesting {
-    fn try_ext_as_virtual(&self, external_id: salsa::InternId) -> Option<VirtualFile> {
-        try_ext_as_virtual_impl(self, external_id)
-    }
-}
-impl salsa::ParallelDatabase for LoweringDatabaseForTesting {
-    fn snapshot(&self) -> salsa::Snapshot<LoweringDatabaseForTesting> {
-        salsa::Snapshot::new(LoweringDatabaseForTesting { storage: self.storage.snapshot() })
-    }
-}
+
 impl LoweringDatabaseForTesting {
     pub fn new() -> Self {
         let mut res = LoweringDatabaseForTesting { storage: Default::default() };
+        init_external_files(&mut res);
         init_files_group(&mut res);
         init_defs_group(&mut res);
         init_semantic_group(&mut res);
 
-        let suite = res.intern_plugin_suite(get_default_plugin_suite());
-        res.set_default_plugins_from_suite(suite);
+        res.set_default_plugins_from_suite(get_default_plugin_suite());
 
         let corelib_path = detect_corelib().expect("Corelib not found in default location.");
         init_dev_corelib(&mut res, corelib_path);
-        init_lowering_group(&mut res, InliningStrategy::Default);
+        init_lowering_group(
+            &mut res,
+            Optimizations::enabled_with_default_movable_functions(InliningStrategy::Default),
+            None,
+        );
         res
     }
 
-    /// Snapshots the db for read only.
+    /// Snapshots the db.
     pub fn snapshot(&self) -> LoweringDatabaseForTesting {
-        LoweringDatabaseForTesting { storage: self.storage.snapshot() }
+        self.clone()
     }
 }
 
@@ -73,39 +55,9 @@ impl Default for LoweringDatabaseForTesting {
         SHARED_DB.lock().unwrap().snapshot()
     }
 }
-impl Upcast<dyn FilesGroup> for LoweringDatabaseForTesting {
-    fn upcast(&self) -> &(dyn FilesGroup + 'static) {
-        self
-    }
-}
-impl Upcast<dyn SyntaxGroup> for LoweringDatabaseForTesting {
-    fn upcast(&self) -> &(dyn SyntaxGroup + 'static) {
-        self
-    }
-}
-impl Upcast<dyn DefsGroup> for LoweringDatabaseForTesting {
-    fn upcast(&self) -> &(dyn DefsGroup + 'static) {
-        self
-    }
-}
-impl Upcast<dyn SemanticGroup> for LoweringDatabaseForTesting {
-    fn upcast(&self) -> &(dyn SemanticGroup + 'static) {
-        self
-    }
-}
-impl Upcast<dyn LoweringGroup> for LoweringDatabaseForTesting {
-    fn upcast(&self) -> &(dyn LoweringGroup + 'static) {
-        self
-    }
-}
-impl Upcast<dyn ParserGroup> for LoweringDatabaseForTesting {
-    fn upcast(&self) -> &(dyn ParserGroup + 'static) {
-        self
-    }
-}
 
 /// Helper for formatting a lowered representation for tests.
-pub fn formatted_lowered(db: &dyn LoweringGroup, lowered: Option<&Lowered>) -> String {
+pub fn formatted_lowered(db: &dyn Database, lowered: Option<&Lowered<'_>>) -> String {
     match lowered {
         Some(lowered) => {
             let lowered_formatter = LoweredFormatter::new(db, &lowered.variables);

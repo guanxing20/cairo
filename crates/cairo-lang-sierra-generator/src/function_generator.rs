@@ -2,16 +2,16 @@
 #[path = "function_generator_test.rs"]
 mod test;
 
-use std::sync::Arc;
-
 use cairo_lang_diagnostics::Maybe;
+use cairo_lang_lowering::db::LoweringGroup;
 use cairo_lang_lowering::ids::ConcreteFunctionWithBodyId;
-use cairo_lang_lowering::{self as lowering, LoweringStage};
+use cairo_lang_lowering::{self as lowering, Lowered, LoweringStage};
+use cairo_lang_sierra::extensions::lib_func::SierraApChange;
 use cairo_lang_sierra::ids::ConcreteLibfuncId;
-use cairo_lang_utils::Intern;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::ordered_hash_set::OrderedHashSet;
 use itertools::{Itertools, zip_eq};
+use salsa::Database;
 
 use crate::block_generator::generate_function_statements;
 use crate::db::SierraGenGroup;
@@ -19,45 +19,54 @@ use crate::expr_generator_context::ExprGeneratorContext;
 use crate::lifetime::{SierraGenVar, find_variable_lifetime};
 use crate::local_variables::{AnalyzeApChangesResult, analyze_ap_changes};
 use crate::pre_sierra;
-use crate::store_variables::{LibfuncInfo, LocalVariables, add_store_statements};
+use crate::store_variables::{LocalVariables, add_store_statements};
 use crate::utils::{
     alloc_local_libfunc_id, disable_ap_tracking_libfunc_id, dummy_call_libfunc_id,
     finalize_locals_libfunc_id, get_concrete_libfunc_id, get_libfunc_signature, return_statement,
     revoke_ap_tracking_libfunc_id, simple_basic_statement,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SierraFunctionWithBodyData {
-    pub function: Maybe<Arc<pre_sierra::Function>>,
+#[derive(Clone, Debug, PartialEq, Eq, salsa::Update)]
+pub struct SierraFunctionWithBodyData<'db> {
+    pub function: Maybe<pre_sierra::Function<'db>>,
+    pub ap_change: SierraApChange,
 }
 
 /// Query implementation of [SierraGenGroup::priv_function_with_body_sierra_data].
-pub fn priv_function_with_body_sierra_data(
-    db: &dyn SierraGenGroup,
-    function_id: ConcreteFunctionWithBodyId,
-) -> SierraFunctionWithBodyData {
-    let function = get_function_code(db, function_id);
-    SierraFunctionWithBodyData { function }
-}
-
-/// Query implementation of [SierraGenGroup::function_with_body_sierra].
-pub fn function_with_body_sierra(
-    db: &dyn SierraGenGroup,
-    function_id: ConcreteFunctionWithBodyId,
-) -> Maybe<Arc<pre_sierra::Function>> {
-    db.priv_function_with_body_sierra_data(function_id).function
-}
-
-fn get_function_code(
-    db: &dyn SierraGenGroup,
-    function_id: ConcreteFunctionWithBodyId,
-) -> Maybe<Arc<pre_sierra::Function>> {
-    let lowered_function = &*db.lowered_body(function_id, LoweringStage::Final)?;
-    let root_block = lowered_function.blocks.root_block()?;
+#[salsa::tracked(returns(ref))]
+pub fn priv_function_with_body_sierra_data<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+) -> Maybe<SierraFunctionWithBodyData<'db>> {
+    let lowered_function = db.lowered_body(function_id, LoweringStage::Final)?;
+    lowered_function.blocks.has_root()?;
 
     // Find the local variables.
+    let analyze_ap_changes_result = analyze_ap_changes(db, lowered_function)?;
+
+    let ap_change = match analyze_ap_changes_result.known_ap_change {
+        true => SierraApChange::Known { new_vars_only: false },
+        false => SierraApChange::Unknown,
+    };
+
+    let function = get_function_ap_change_and_code(
+        db,
+        function_id,
+        lowered_function,
+        analyze_ap_changes_result,
+    );
+    Ok(SierraFunctionWithBodyData { ap_change, function })
+}
+
+fn get_function_ap_change_and_code<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+    lowered_function: &Lowered<'db>,
+    analyze_ap_change_result: AnalyzeApChangesResult,
+) -> Maybe<pre_sierra::Function<'db>> {
+    let root_block = lowered_function.blocks.root_block()?;
     let AnalyzeApChangesResult { known_ap_change, local_variables, ap_tracking_configuration } =
-        analyze_ap_changes(db, lowered_function)?;
+        analyze_ap_change_result;
 
     // Get lifetime information.
     let lifetime = find_variable_lifetime(lowered_function, &local_variables)?;
@@ -90,7 +99,7 @@ fn get_function_code(
         .map(|param_id| {
             Ok(cairo_lang_sierra::program::Param {
                 id: context.get_sierra_variable(*param_id),
-                ty: db.get_concrete_type_id(lowered_function.variables[*param_id].ty)?,
+                ty: db.get_concrete_type_id(lowered_function.variables[*param_id].ty)?.clone(),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -110,15 +119,14 @@ fn get_function_code(
         context.set_ap_tracking(false);
     }
 
+    let variable_locations = context.variable_locations();
     // Generate the function's code.
     let statements = generate_function_statements(context)?;
 
     let statements = add_store_statements(
         db,
         statements,
-        &|concrete_lib_func_id: ConcreteLibfuncId| -> LibfuncInfo {
-            LibfuncInfo { signature: get_libfunc_signature(db, concrete_lib_func_id) }
-        },
+        &|id: ConcreteLibfuncId| get_libfunc_signature(db, &id),
         sierra_local_variables,
         &parameters,
     );
@@ -126,21 +134,22 @@ fn get_function_code(
     // TODO(spapini): Don't intern objects for the semantic model outside the crate. These should
     // be regarded as private.
     Ok(pre_sierra::Function {
-        id: function_id.function_id(db)?.intern(db),
+        id: db.intern_sierra_function(function_id.function_id(db)?),
         body: statements,
         entry_point: label_id,
         parameters,
-    }
-    .into())
+        variable_locations,
+    })
 }
 
 /// Query implementation of [SierraGenGroup::priv_get_dummy_function].
-pub fn priv_get_dummy_function(
-    db: &dyn SierraGenGroup,
-    function_id: ConcreteFunctionWithBodyId,
-) -> Maybe<Arc<pre_sierra::Function>> {
+#[salsa::tracked(returns(ref))]
+pub fn priv_get_dummy_function<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+) -> Maybe<pre_sierra::Function<'db>> {
     // TODO(ilya): Remove the following query.
-    let lowered_function = &*db.lowered_body(function_id, LoweringStage::PreOptimizations)?;
+    let lowered_function = db.lowered_body(function_id, LoweringStage::PreOptimizations)?;
     let ap_tracking_configuration = Default::default();
     let lifetime = Default::default();
 
@@ -156,7 +165,7 @@ pub fn priv_get_dummy_function(
     let (label, label_id) = context.new_label();
     context.push_statement(label);
 
-    let sierra_id = function_id.function_id(db)?.intern(db);
+    let sierra_id = db.intern_sierra_function(function_id.function_id(db)?);
     let sierra_signature = db.get_function_signature(sierra_id.clone()).unwrap();
 
     let param_vars = (0..sierra_signature.param_types.len() as u64)
@@ -173,7 +182,7 @@ pub fn priv_get_dummy_function(
         .collect::<Result<Vec<_>, _>>()?;
 
     context.push_statement(simple_basic_statement(
-        dummy_call_libfunc_id(db, sierra_id, &sierra_signature),
+        dummy_call_libfunc_id(db, sierra_id, sierra_signature),
         &param_vars[..],
         &ret_vars[..],
     ));
@@ -181,12 +190,12 @@ pub fn priv_get_dummy_function(
     context.push_statement(return_statement(ret_vars));
 
     Ok(pre_sierra::Function {
-        id: function_id.function_id(db)?.intern(db),
+        id: db.intern_sierra_function(function_id.function_id(db)?),
         body: context.statements(),
         entry_point: label_id,
         parameters,
-    }
-    .into())
+        variable_locations: vec![],
+    })
 }
 
 /// Allocates space for the local variables.
@@ -194,8 +203,8 @@ pub fn priv_get_dummy_function(
 /// * A map from a Sierra variable that should be stored as local variable to its allocated space
 ///   (uninitialized local variable).
 /// * A list of Sierra statements.
-fn allocate_local_variables(
-    context: &mut ExprGeneratorContext<'_>,
+fn allocate_local_variables<'db>(
+    context: &mut ExprGeneratorContext<'db, '_>,
     local_variables: &OrderedHashSet<lowering::VariableId>,
 ) -> Maybe<LocalVariables> {
     let mut sierra_local_variables =

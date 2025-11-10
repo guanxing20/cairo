@@ -44,12 +44,12 @@ pub fn build(
 /// type Option = Enum<felt252_ty, unit_ty>;
 /// libfunc init_option_some = enum_init<Option, 0>;
 /// felt252_const<8>() -> (felt8);
-/// ````
+/// ```
 /// this "Sierra statement"
 /// ```ignore
 /// init_option_some(felt8=[ap-5]) -> (some_id);
 /// ```
-/// translates to these casm instructions:
+/// translates to these CASM instructions:
 /// ```ignore
 /// [ap] = 0; ap++
 /// [ap] = 8; ap++
@@ -210,7 +210,7 @@ fn build_enum_match(
 /// ```ignore
 /// match_option(enum_var=[ap-10]) {fallthrough(some=[ap-9]), 2000(none=[ap-9])};
 /// ```
-/// translates to these casm instructions:
+/// translates to these CASM instructions:
 /// ```ignore
 /// jmp rel <jump_offset_2000> if [ap-10] != 0
 /// jmp rel <jump_offset_fallthrough>
@@ -219,7 +219,7 @@ fn build_enum_match(
 /// ```ignore
 /// match_option(enum_var=[ap-10]) {fallthrough(var=[ap-9])};
 /// ```
-/// translates to 0 casm instructions.
+/// translates to 0 CASM instructions.
 ///
 /// Assumes that builder.invocation.branches.len() == output_expressions.len() and that
 /// builder.invocation.branches.len() <= 2.
@@ -267,7 +267,7 @@ fn build_enum_match_short(
 /// ```ignore
 /// match_positivity(enum_var=[ap-10]) {fallthrough(pos=[ap-9]), 2000(neg=[ap-9]), 3000(zero=[ap-9])};
 /// ```
-/// translates to these casm instructions:
+/// translates to these CASM instructions:
 /// ```ignore
 /// jmp rel [ap-10]
 /// jmp rel <jump_offset_2000>

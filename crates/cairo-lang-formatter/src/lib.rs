@@ -6,11 +6,11 @@ pub mod formatter_impl;
 pub mod node_properties;
 
 use cairo_lang_diagnostics::DiagnosticsBuilder;
-use cairo_lang_filesystem::ids::{FileKind, FileLongId, VirtualFile};
+use cairo_lang_filesystem::ids::{FileKind, FileLongId, SmolStrId, VirtualFile};
 use cairo_lang_parser::parser::Parser;
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{SyntaxNode, TypedSyntaxNode};
 use cairo_lang_utils::Intern;
+use salsa::Database;
 use serde::{Deserialize, Serialize};
 
 pub use crate::cairo_formatter::{CairoFormatter, FormatOutcome, StdinFmt};
@@ -29,8 +29,8 @@ pub const CAIRO_FMT_IGNORE: &str = ".cairofmtignore";
 /// # Returns
 /// * `String` - The formatted file.
 pub fn get_formatted_file(
-    db: &dyn SyntaxGroup,
-    syntax_root: &SyntaxNode,
+    db: &dyn Database,
+    syntax_root: &SyntaxNode<'_>,
     config: FormatterConfig,
 ) -> String {
     let mut formatter = FormatterImpl::new(db, config);
@@ -43,11 +43,11 @@ pub fn get_formatted_file(
 /// * `content` - The code to format.
 /// # Returns
 /// * `String` - The formatted code.
-pub fn format_string(db: &dyn SyntaxGroup, content: String) -> String {
+pub fn format_string(db: &dyn Database, content: String) -> String {
     let virtual_file = FileLongId::Virtual(VirtualFile {
         parent: None,
-        name: "string_to_format".into(),
-        content: content.clone().into(),
+        name: SmolStrId::from(db, "string_to_format"),
+        content: SmolStrId::from(db, &content),
         code_mappings: [].into(),
         kind: FileKind::Module,
         original_item_removed: false,

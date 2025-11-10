@@ -1,22 +1,29 @@
 use std::sync::Arc;
 
+use cairo_lang_defs::db::DefsGroup;
 use cairo_lang_defs::ids::{
-    FileIndex, GenericTypeId, ImportableId, LanguageElementId, ModuleFileId, ModuleId,
-    NamedLanguageElementId, TraitFunctionId, TraitId,
+    GenericTypeId, ImportableId, LanguageElementId, ModuleId, NamedLanguageElementId,
+    TraitFunctionId, TraitId,
 };
-use cairo_lang_filesystem::db::CORELIB_CRATE_NAME;
-use cairo_lang_filesystem::ids::{CrateId, CrateLongId};
+use cairo_lang_filesystem::db::{CORELIB_CRATE_NAME, FilesGroup, default_crate_settings};
+use cairo_lang_filesystem::ids::{
+    CrateId, CrateLongId, FileId, FileInput, FileLongId, SmolStrId, Tracked,
+};
 use cairo_lang_utils::Intern;
 use cairo_lang_utils::ordered_hash_map::{Entry, OrderedHashMap};
 use cairo_lang_utils::unordered_hash_set::UnorderedHashSet;
 use itertools::chain;
-use smol_str::SmolStr;
+use salsa::{Accumulator, Database};
 
 use crate::Variant;
 use crate::corelib::{self, core_submodule, get_submodule};
-use crate::db::SemanticGroup;
+use crate::db::module_inline_macro_expansions;
 use crate::expr::inference::InferenceId;
+use crate::items::enm::EnumSemantic;
 use crate::items::functions::GenericFunctionId;
+use crate::items::macro_call::module_macro_modules;
+use crate::items::module::ModuleSemantic;
+use crate::items::trt::TraitSemantic;
 use crate::items::us::SemanticUseEx;
 use crate::keyword::SELF_PARAM_KW;
 use crate::resolve::{ResolvedGenericItem, Resolver};
@@ -24,110 +31,146 @@ use crate::types::TypeHead;
 
 /// A filter for types.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum TypeFilter {
+pub enum TypeFilter<'db> {
     /// No filter is applied.
     NoFilter,
     /// Only methods with the given type head are returned.
-    TypeHead(TypeHead),
+    TypeHead(TypeHead<'db>),
 }
 
-/// Query implementation of [crate::db::SemanticGroup::methods_in_module].
-pub fn methods_in_module(
-    db: &dyn SemanticGroup,
-    module_id: ModuleId,
-    type_filter: TypeFilter,
-) -> Arc<[TraitFunctionId]> {
+/// Implementation of [LspHelpers::methods_in_module].
+pub fn methods_in_module<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+    type_filter: TypeFilter<'db>,
+) -> Arc<Vec<TraitFunctionId<'db>>> {
     let mut result = Vec::new();
     let Ok(module_traits_ids) = db.module_traits_ids(module_id) else {
         return result.into();
     };
     for trait_id in module_traits_ids.iter().copied() {
-        for (_, trait_function) in db.trait_functions(trait_id).unwrap_or_default() {
-            let Ok(signature) = db.trait_function_signature(trait_function) else {
-                continue;
-            };
-            let Some(first_param) = signature.params.first() else {
-                continue;
-            };
-            if first_param.name != SELF_PARAM_KW {
-                continue;
-            }
-            if let TypeFilter::TypeHead(type_head) = &type_filter {
-                if let Some(head) = first_param.ty.head(db) {
-                    if !fit_for_method(&head, type_head) {
-                        continue;
-                    }
+        if let Ok(trait_functions) = db.trait_functions(trait_id) {
+            for trait_function in trait_functions.values() {
+                let Ok(signature) = db.trait_function_signature(*trait_function) else {
+                    continue;
+                };
+                let Some(first_param) = signature.params.first() else {
+                    continue;
+                };
+                if first_param.name.long(db) != SELF_PARAM_KW {
+                    continue;
                 }
-            }
+                if let TypeFilter::TypeHead(type_head) = &type_filter
+                    && let Some(head) = first_param.ty.head(db)
+                    && !fit_for_method(&head, type_head)
+                {
+                    continue;
+                }
 
-            result.push(trait_function)
+                result.push(*trait_function)
+            }
         }
     }
-    result.into()
+    Arc::new(result)
+}
+
+/// Query implementation of [LspHelpers::methods_in_module].
+#[salsa::tracked]
+pub fn methods_in_module_tracked<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+    type_filter: TypeFilter<'db>,
+) -> Arc<Vec<TraitFunctionId<'db>>> {
+    methods_in_module(db, module_id, type_filter)
 }
 
 /// Checks if a type head can fit for a method.
-fn fit_for_method(head: &TypeHead, type_head: &TypeHead) -> bool {
+fn fit_for_method(head: &TypeHead<'_>, type_head: &TypeHead<'_>) -> bool {
+    // Allow generics so we can filter them later with resolver.
+    if let TypeHead::Generic(_) = head {
+        return true;
+    }
     if head == type_head {
         return true;
     }
     if let TypeHead::Snapshot(snapshot_head) = head {
-        return snapshot_head.as_ref() == type_head;
+        return fit_for_method(snapshot_head.as_ref(), type_head);
     }
     false
 }
 
-/// Query implementation of [crate::db::SemanticGroup::methods_in_crate].
-pub fn methods_in_crate(
-    db: &dyn SemanticGroup,
-    crate_id: CrateId,
-    type_filter: TypeFilter,
-) -> Arc<[TraitFunctionId]> {
+/// Implementation of [LspHelpers::methods_in_crate].
+pub fn methods_in_crate<'db>(
+    db: &'db dyn Database,
+    crate_id: CrateId<'db>,
+    type_filter: TypeFilter<'db>,
+) -> Arc<Vec<TraitFunctionId<'db>>> {
     let mut result = Vec::new();
     for module_id in db.crate_modules(crate_id).iter() {
         result.extend_from_slice(&db.methods_in_module(*module_id, type_filter.clone())[..])
     }
-    result.into()
+    Arc::new(result)
 }
 
-/// Query implementation of [crate::db::SemanticGroup::visible_importables_in_module].
-pub fn visible_importables_in_module(
-    db: &dyn SemanticGroup,
-    module_id: ModuleId,
-    user_module_file_id: ModuleFileId,
+/// Query implementation of [LspHelpers::methods_in_crate].
+#[salsa::tracked]
+pub fn methods_in_crate_tracked<'db>(
+    db: &'db dyn Database,
+    crate_id: CrateId<'db>,
+    type_filter: TypeFilter<'db>,
+) -> Arc<Vec<TraitFunctionId<'db>>> {
+    methods_in_crate(db, crate_id, type_filter)
+}
+
+/// Implementation of [LspHelpers::visible_importables_in_module].
+pub fn visible_importables_in_module<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+    user_module_id: ModuleId<'db>,
     include_parent: bool,
-) -> Arc<[(ImportableId, String)]> {
+) -> Arc<Vec<(ImportableId<'db>, String)>> {
     let mut visited_modules = UnorderedHashSet::default();
     visible_importables_in_module_ex(
         db,
         module_id,
-        user_module_file_id,
+        user_module_id,
         include_parent,
         &mut visited_modules,
     )
-    .unwrap_or_else(|| Vec::new().into())
+    .unwrap_or_else(|| Arc::new(Vec::new()))
+}
+
+/// Query implementation of [LspHelpers::visible_importables_in_module].
+#[salsa::tracked]
+pub fn visible_importables_in_module_tracked<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+    user_module_id: ModuleId<'db>,
+    include_parent: bool,
+) -> Arc<Vec<(ImportableId<'db>, String)>> {
+    visible_importables_in_module(db, module_id, user_module_id, include_parent)
 }
 
 /// Returns the visible importables in a module, including the importables in the parent module if
 /// needed. The visibility is relative to the module `user_module_id`.
-fn visible_importables_in_module_ex(
-    db: &dyn SemanticGroup,
-    module_id: ModuleId,
-    user_module_file_id: ModuleFileId,
+fn visible_importables_in_module_ex<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+    user_module_id: ModuleId<'db>,
     include_parent: bool,
-    visited_modules: &mut UnorderedHashSet<ModuleId>,
-) -> Option<Arc<[(ImportableId, String)]>> {
+    visited_modules: &mut UnorderedHashSet<ModuleId<'db>>,
+) -> Option<Arc<Vec<(ImportableId<'db>, String)>>> {
     let mut result = Vec::new();
     if visited_modules.contains(&module_id) {
         return Some(result.into());
     }
 
-    let resolver = Resolver::new(db, user_module_file_id, InferenceId::NoContext);
+    let resolver = Resolver::new(db, user_module_id, InferenceId::NoContext);
 
     // Check if an item in the current module is visible from the user module.
-    let is_visible = |item_name: SmolStr| {
+    let is_visible = |item_name: SmolStrId<'_>| {
         let item_info = db.module_item_info_by_name(module_id, item_name).ok()??;
-        Some(resolver.is_item_visible(module_id, &item_info, user_module_file_id.0))
+        Some(resolver.is_item_visible(module_id, &item_info, user_module_id))
     };
     visited_modules.insert(module_id);
     let mut modules_to_visit = vec![];
@@ -139,59 +182,67 @@ fn visible_importables_in_module_ex(
         let Ok(resolved_item) = db.use_resolved_item(use_id) else {
             continue;
         };
+
         let (resolved_item, name) = match resolved_item {
             ResolvedGenericItem::Module(ModuleId::CrateRoot(crate_id)) => {
-                result.extend_from_slice(
-                    &db.visible_importables_in_crate(
-                        crate_id,
-                        ModuleFileId(module_id, FileIndex(0)),
-                    )[..],
-                );
+                result.extend_from_slice(&db.visible_importables_in_crate(crate_id, module_id)[..]);
 
-                (ImportableId::Crate(crate_id), crate_id.name(db))
+                (ImportableId::Crate(crate_id), crate_id.long(db).name().long(db))
             }
             ResolvedGenericItem::Module(inner_module_id @ ModuleId::Submodule(module)) => {
                 modules_to_visit.push(inner_module_id);
 
-                (ImportableId::Submodule(module), module.name(db))
+                (ImportableId::Submodule(module), module.name(db).long(db))
+            }
+            ResolvedGenericItem::Module(ModuleId::MacroCall { .. }) => {
+                continue;
             }
             ResolvedGenericItem::GenericConstant(item_id) => {
-                (ImportableId::Constant(item_id), item_id.name(db))
+                (ImportableId::Constant(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::GenericFunction(GenericFunctionId::Free(item_id)) => {
-                (ImportableId::FreeFunction(item_id), item_id.name(db))
+                (ImportableId::FreeFunction(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::GenericFunction(GenericFunctionId::Extern(item_id)) => {
-                (ImportableId::ExternFunction(item_id), item_id.name(db))
+                (ImportableId::ExternFunction(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::GenericType(GenericTypeId::Struct(item_id)) => {
-                (ImportableId::Struct(item_id), item_id.name(db))
+                (ImportableId::Struct(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::GenericType(GenericTypeId::Enum(item_id)) => {
                 let enum_name = item_id.name(db);
 
-                for (name, id) in db.enum_variants(item_id).unwrap_or_default() {
-                    result.push((ImportableId::Variant(id), format!("{enum_name}::{name}")));
+                if let Ok(variants) = db.enum_variants(item_id) {
+                    for (name, id) in variants.iter() {
+                        result.push((
+                            ImportableId::Variant(*id),
+                            format!("{}::{}", enum_name.long(db), name.long(db)),
+                        ));
+                    }
                 }
 
-                (ImportableId::Enum(item_id), enum_name)
+                (ImportableId::Enum(item_id), enum_name.long(db))
             }
             ResolvedGenericItem::GenericType(GenericTypeId::Extern(item_id)) => {
-                (ImportableId::ExternType(item_id), item_id.name(db))
+                (ImportableId::ExternType(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::GenericTypeAlias(item_id) => {
-                (ImportableId::TypeAlias(item_id), item_id.name(db))
+                (ImportableId::TypeAlias(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::GenericImplAlias(item_id) => {
-                (ImportableId::ImplAlias(item_id), item_id.name(db))
+                (ImportableId::ImplAlias(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::Variant(Variant { id, .. }) => {
-                (ImportableId::Variant(id), id.name(db))
+                (ImportableId::Variant(id), id.name(db).long(db))
             }
-            ResolvedGenericItem::Trait(item_id) => (ImportableId::Trait(item_id), item_id.name(db)),
-            ResolvedGenericItem::Impl(item_id) => (ImportableId::Impl(item_id), item_id.name(db)),
+            ResolvedGenericItem::Trait(item_id) => {
+                (ImportableId::Trait(item_id), item_id.name(db).long(db))
+            }
+            ResolvedGenericItem::Impl(item_id) => {
+                (ImportableId::Impl(item_id), item_id.name(db).long(db))
+            }
             ResolvedGenericItem::Macro(item_id) => {
-                (ImportableId::MacroDeclaration(item_id), item_id.name(db))
+                (ImportableId::MacroDeclaration(item_id), item_id.name(db).long(db))
             }
             ResolvedGenericItem::Variable(_)
             | ResolvedGenericItem::TraitItem(_)
@@ -201,24 +252,34 @@ fn visible_importables_in_module_ex(
         result.push((resolved_item, name.to_string()));
     }
 
+    if !matches!(module_id, ModuleId::MacroCall { .. }) {
+        modules_to_visit.extend(module_macro_modules(db, false, module_id).iter().copied());
+    }
+
     for submodule_id in db.module_submodules_ids(module_id).unwrap_or_default().iter().copied() {
         if !is_visible(submodule_id.name(db)).unwrap_or_default() {
             continue;
         }
-        result.push((ImportableId::Submodule(submodule_id), submodule_id.name(db).to_string()));
+        result.push((ImportableId::Submodule(submodule_id), submodule_id.name(db).to_string(db)));
         modules_to_visit.push(ModuleId::Submodule(submodule_id));
     }
 
     // Handle enums separately because we need to include their variants.
     for enum_id in db.module_enums_ids(module_id).unwrap_or_default().iter().copied() {
         let enum_name = enum_id.name(db);
-        if !is_visible(enum_name.clone()).unwrap_or_default() {
+        if !is_visible(enum_name).unwrap_or_default() {
             continue;
         }
 
-        result.push((ImportableId::Enum(enum_id), enum_name.to_string()));
-        for (name, id) in db.enum_variants(enum_id).unwrap_or_default() {
-            result.push((ImportableId::Variant(id), format!("{enum_name}::{name}")));
+        result.push((ImportableId::Enum(enum_id), enum_name.to_string(db)));
+
+        if let Ok(variants) = db.enum_variants(enum_id) {
+            for (name, id) in variants.iter() {
+                result.push((
+                    ImportableId::Variant(*id),
+                    format!("{}::{}", enum_name.long(db), name.long(db)),
+                ));
+            }
         }
     }
 
@@ -228,7 +289,7 @@ fn visible_importables_in_module_ex(
                 if !is_visible(item_id.name(db)).unwrap_or_default() {
                     continue;
                 }
-                result.push(($map(item_id), item_id.name(db).to_string()));
+                result.push(($map(item_id), item_id.name(db).to_string(db)));
             }
         };
     }
@@ -242,19 +303,15 @@ fn visible_importables_in_module_ex(
     module_importables!(module_impls_ids, ImportableId::Impl);
     module_importables!(module_extern_functions_ids, ImportableId::ExternFunction);
     module_importables!(module_extern_types_ids, ImportableId::ExternType);
+    module_importables!(module_macro_declarations_ids, ImportableId::MacroDeclaration);
 
     for submodule in modules_to_visit {
-        for (item_id, path) in visible_importables_in_module_ex(
-            db,
-            submodule,
-            user_module_file_id,
-            false,
-            visited_modules,
-        )
-        .unwrap_or_default()
-        .iter()
+        for (item_id, path) in
+            visible_importables_in_module_ex(db, submodule, user_module_id, false, visited_modules)
+                .unwrap_or_default()
+                .iter()
         {
-            result.push((*item_id, format!("{}::{}", submodule.name(db), path)));
+            result.push((*item_id, format!("{}::{}", submodule.name(db).long(db), path)));
         }
     }
     // Traverse the parent module if needed.
@@ -266,7 +323,7 @@ fn visible_importables_in_module_ex(
                 for (item_id, path) in visible_importables_in_module_ex(
                     db,
                     parent_module_id,
-                    user_module_file_id,
+                    user_module_id,
                     include_parent,
                     visited_modules,
                 )
@@ -276,75 +333,85 @@ fn visible_importables_in_module_ex(
                     result.push((*item_id, format!("super::{path}")));
                 }
             }
+            ModuleId::MacroCall { .. } => {}
         }
     }
-    Some(result.into())
+    Some(Arc::new(result))
 }
 
-/// Query implementation of [crate::db::SemanticGroup::visible_importables_in_crate].
-pub fn visible_importables_in_crate(
-    db: &dyn SemanticGroup,
-    crate_id: CrateId,
-    user_module_file_id: ModuleFileId,
-) -> Arc<[(ImportableId, String)]> {
-    let is_current_crate = user_module_file_id.0.owning_crate(db) == crate_id;
-    let crate_name = if is_current_crate { "crate" } else { &crate_id.name(db) };
+/// Implementation of [LspHelpers::visible_importables_in_crate].
+pub fn visible_importables_in_crate<'db>(
+    db: &'db dyn Database,
+    crate_id: CrateId<'db>,
+    user_module_id: ModuleId<'db>,
+) -> Arc<Vec<(ImportableId<'db>, String)>> {
+    let is_current_crate = user_module_id.owning_crate(db) == crate_id;
+    let crate_name = if is_current_crate { "crate" } else { crate_id.long(db).name().long(db) };
     let crate_as_module = ModuleId::CrateRoot(crate_id);
-    db.visible_importables_in_module(crate_as_module, user_module_file_id, false)
+    db.visible_importables_in_module(crate_as_module, user_module_id, false)
         .iter()
-        .cloned()
-        .map(|(item_id, path)| (item_id, format!("{crate_name}::{path}",)))
+        .map(|(item_id, path)| (*item_id, format!("{crate_name}::{path}")))
         .collect::<Vec<_>>()
         .into()
 }
 
-/// Query implementation of [crate::db::SemanticGroup::visible_importables_from_module].
-pub fn visible_importables_from_module(
-    db: &dyn SemanticGroup,
-    module_file_id: ModuleFileId,
-) -> Option<Arc<OrderedHashMap<ImportableId, String>>> {
-    let module_id = module_file_id.0;
+/// Query implementation of [LspHelpers::visible_importables_in_crate].
+#[salsa::tracked]
+pub fn visible_importables_in_crate_tracked<'db>(
+    db: &'db dyn Database,
+    crate_id: CrateId<'db>,
+    user_module_id: ModuleId<'db>,
+) -> Arc<Vec<(ImportableId<'db>, String)>> {
+    visible_importables_in_crate(db, crate_id, user_module_id)
+}
 
+/// Implementation of [LspHelpers::visible_importables_from_module].
+pub fn visible_importables_from_module<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+) -> Option<Arc<OrderedHashMap<ImportableId<'db>, String>>> {
     let current_crate_id = module_id.owning_crate(db);
-    let edition = db.crate_config(current_crate_id)?.settings.edition;
-    let prelude_submodule_name = edition.prelude_submodule_name();
-    let core_prelude_submodule = core_submodule(db, "prelude");
+    let prelude_submodule_name =
+        db.crate_config(current_crate_id)?.settings.edition.prelude_submodule_name(db);
+    let core_prelude_submodule = core_submodule(db, SmolStrId::from(db, "prelude"));
     let prelude_submodule = get_submodule(db, core_prelude_submodule, prelude_submodule_name)?;
-    let prelude_submodule_file_id = ModuleFileId(prelude_submodule, FileIndex(0));
 
     let mut module_visible_importables = Vec::new();
     // Collect importables from the prelude.
     module_visible_importables.extend_from_slice(
-        &db.visible_importables_in_module(prelude_submodule, prelude_submodule_file_id, false)[..],
+        &db.visible_importables_in_module(prelude_submodule, prelude_submodule, false)[..],
     );
     // Collect importables from all dependency crates, including the current crate and corelib.
-    let settings = db.crate_config(current_crate_id).map(|c| c.settings).unwrap_or_default();
+    let settings = db
+        .crate_config(current_crate_id)
+        .map(|c| &c.settings)
+        .unwrap_or_else(|| default_crate_settings(db));
     for crate_id in chain!(
         [current_crate_id],
         (!settings.dependencies.contains_key(CORELIB_CRATE_NAME)).then(|| corelib::core_crate(db)),
         settings.dependencies.iter().map(|(name, setting)| {
             CrateLongId::Real {
-                name: name.clone().into(),
+                name: SmolStrId::from(db, name.clone()),
                 discriminator: setting.discriminator.clone(),
             }
             .intern(db)
         })
     ) {
         module_visible_importables
-            .extend_from_slice(&db.visible_importables_in_crate(crate_id, module_file_id)[..]);
+            .extend_from_slice(&db.visible_importables_in_crate(crate_id, module_id)[..]);
         module_visible_importables
-            .push((ImportableId::Crate(crate_id), crate_id.name(db).to_string()));
+            .push((ImportableId::Crate(crate_id), crate_id.long(db).name().to_string(db)));
     }
 
     // Collect importables visible in the current module.
     module_visible_importables
-        .extend_from_slice(&db.visible_importables_in_module(module_id, module_file_id, true)[..]);
+        .extend_from_slice(&db.visible_importables_in_module(module_id, module_id, true)[..]);
 
     // Deduplicate importables, preferring shorter paths.
     // This is the reason for searching in the crates before the current module - to prioritize
     // shorter, canonical paths prefixed with `crate::` over paths using `super::` or local
     // imports.
-    let mut result: OrderedHashMap<ImportableId, String> = OrderedHashMap::default();
+    let mut result: OrderedHashMap<ImportableId<'_>, String> = OrderedHashMap::default();
     for (trait_id, path) in module_visible_importables {
         match result.entry(trait_id) {
             Entry::Occupied(existing_path) => {
@@ -357,15 +424,32 @@ pub fn visible_importables_from_module(
             }
         }
     }
-    Some(result.into())
+    Some(Arc::new(result))
 }
 
-/// Query implementation of [crate::db::SemanticGroup::visible_traits_from_module].
-pub fn visible_traits_from_module(
-    db: &dyn SemanticGroup,
-    module_file_id: ModuleFileId,
-) -> Option<Arc<OrderedHashMap<TraitId, String>>> {
-    let importables = db.visible_importables_from_module(module_file_id)?;
+/// Query implementation of [LspHelpers::visible_importables_from_module].
+pub fn visible_importables_from_module_tracked<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+) -> Option<Arc<OrderedHashMap<ImportableId<'db>, String>>> {
+    visible_importables_from_module_helper(db, (), module_id)
+}
+
+#[salsa::tracked]
+fn visible_importables_from_module_helper<'db>(
+    db: &'db dyn Database,
+    _tracked: Tracked,
+    module_id: ModuleId<'db>,
+) -> Option<Arc<OrderedHashMap<ImportableId<'db>, String>>> {
+    visible_importables_from_module(db, module_id)
+}
+
+/// Implementation of [LspHelpers::visible_traits_from_module].
+pub fn visible_traits_from_module<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+) -> Option<Arc<OrderedHashMap<TraitId<'db>, String>>> {
+    let importables = db.visible_importables_from_module(module_id)?;
 
     let traits = importables
         .iter()
@@ -381,3 +465,108 @@ pub fn visible_traits_from_module(
 
     Some(traits)
 }
+
+/// Query implementation of [LspHelpers::visible_traits_from_module].
+fn visible_traits_from_module_tracked<'db>(
+    db: &'db dyn Database,
+    module_id: ModuleId<'db>,
+) -> Option<Arc<OrderedHashMap<TraitId<'db>, String>>> {
+    visible_traits_from_module_helper(db, (), module_id)
+}
+
+#[salsa::tracked]
+fn visible_traits_from_module_helper<'db>(
+    db: &'db dyn Database,
+    _tracked: Tracked,
+    module_id: ModuleId<'db>,
+) -> Option<Arc<OrderedHashMap<TraitId<'db>, String>>> {
+    visible_traits_from_module(db, module_id)
+}
+
+/// Query implementation of [LspHelpers::inline_macro_expansion_files].
+#[salsa::tracked(returns(ref))]
+fn inline_macro_expansion_files_tracked<'db>(
+    db: &'db dyn Database,
+    _tracked: Tracked,
+    module_id: ModuleId<'db>,
+) -> Vec<FileId<'db>> {
+    module_inline_macro_expansions(db, module_id)
+        .iter()
+        .map(|expansion| expansion.file.clone().into_file_long_id(db).intern(db))
+        .collect()
+}
+
+#[salsa::accumulator]
+pub struct InlineMacroExpansionAccumulator {
+    file: FileInput,
+}
+
+/// Trait for LSP helpers.
+pub trait LspHelpers<'db>: Database {
+    /// Returns all methods in a module that match the given type filter.
+    fn methods_in_module(
+        &'db self,
+        module_id: ModuleId<'db>,
+        type_filter: TypeFilter<'db>,
+    ) -> Arc<Vec<TraitFunctionId<'db>>> {
+        methods_in_module_tracked(self.as_dyn_database(), module_id, type_filter)
+    }
+    /// Returns all methods in a crate that match the given type filter.
+    fn methods_in_crate(
+        &'db self,
+        crate_id: CrateId<'db>,
+        type_filter: TypeFilter<'db>,
+    ) -> Arc<Vec<TraitFunctionId<'db>>> {
+        methods_in_crate_tracked(self.as_dyn_database(), crate_id, type_filter)
+    }
+    /// Returns all the importables visible from a module, alongside a visible use path to the
+    /// trait.
+    fn visible_importables_from_module(
+        &'db self,
+        module_id: ModuleId<'db>,
+    ) -> Option<Arc<OrderedHashMap<ImportableId<'db>, String>>> {
+        visible_importables_from_module_tracked(self.as_dyn_database(), module_id)
+    }
+    /// Returns all visible importables in a module, alongside a visible use path to the trait.
+    /// `user_module_id` is the module from which the importables should be visible. If
+    /// `include_parent` is true, the parent module of `module_id` is also considered.
+    fn visible_importables_in_module(
+        &'db self,
+        module_id: ModuleId<'db>,
+        user_module_id: ModuleId<'db>,
+        include_parent: bool,
+    ) -> Arc<Vec<(ImportableId<'db>, String)>> {
+        visible_importables_in_module_tracked(
+            self.as_dyn_database(),
+            module_id,
+            user_module_id,
+            include_parent,
+        )
+    }
+    /// Returns all visible importables in a crate, alongside a visible use path to the trait.
+    /// `user_module_id` is the module from which the importables should be visible.
+    fn visible_importables_in_crate(
+        &'db self,
+        crate_id: CrateId<'db>,
+        user_module_id: ModuleId<'db>,
+    ) -> Arc<Vec<(ImportableId<'db>, String)>> {
+        visible_importables_in_crate_tracked(self.as_dyn_database(), crate_id, user_module_id)
+    }
+    /// Returns all the traits visible from a module, alongside a visible use path to the trait.
+    fn visible_traits_from_module(
+        &'db self,
+        module_id: ModuleId<'db>,
+    ) -> Option<Arc<OrderedHashMap<TraitId<'db>, String>>> {
+        visible_traits_from_module_tracked(self.as_dyn_database(), module_id)
+    }
+    /// Returns all files generated by inline macro expansion inside provided module.
+    fn inline_macro_expansion_files(&'db self, module_id: ModuleId<'db>) -> &'db Vec<FileId<'db>> {
+        inline_macro_expansion_files_tracked(self.as_dyn_database(), (), module_id)
+    }
+    /// Marks file as result of inline macro expansion.
+    fn accumulate_inline_macro_expansion(&'db self, file: &FileLongId<'db>) {
+        let db = self.as_dyn_database();
+        InlineMacroExpansionAccumulator { file: file.into_file_input(db) }.accumulate(db);
+    }
+}
+impl<'db, T: Database + ?Sized> LspHelpers<'db> for T {}

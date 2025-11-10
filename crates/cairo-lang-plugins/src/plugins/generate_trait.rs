@@ -4,11 +4,12 @@ use cairo_lang_defs::patcher::{PatchBuilder, RewriteNode};
 use cairo_lang_defs::plugin::{
     MacroPlugin, MacroPluginMetadata, PluginDiagnostic, PluginGeneratedFile, PluginResult,
 };
+use cairo_lang_filesystem::ids::SmolStrId;
 use cairo_lang_syntax::attribute::structured::{AttributeArgVariant, AttributeStructurize};
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::{BodyItems, GenericParamEx, QueryAttrs};
 use cairo_lang_syntax::node::{Terminal, TypedSyntaxNode, ast};
 use itertools::Itertools;
+use salsa::Database;
 
 #[derive(Debug, Default)]
 #[non_exhaustive]
@@ -17,12 +18,12 @@ pub struct GenerateTraitPlugin;
 const GENERATE_TRAIT_ATTR: &str = "generate_trait";
 
 impl MacroPlugin for GenerateTraitPlugin {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        item_ast: ast::ModuleItem,
+        db: &'db dyn Database,
+        item_ast: ast::ModuleItem<'db>,
         _metadata: &MacroPluginMetadata<'_>,
-    ) -> PluginResult {
+    ) -> PluginResult<'db> {
         match item_ast {
             ast::ModuleItem::Impl(impl_ast) => generate_trait_for_impl(db, impl_ast),
             module_item => {
@@ -40,12 +41,15 @@ impl MacroPlugin for GenerateTraitPlugin {
         }
     }
 
-    fn declared_attributes(&self) -> Vec<String> {
-        vec![GENERATE_TRAIT_ATTR.to_string()]
+    fn declared_attributes<'db>(&self, db: &'db dyn Database) -> Vec<SmolStrId<'db>> {
+        vec![SmolStrId::from(db, GENERATE_TRAIT_ATTR)]
     }
 }
 
-fn generate_trait_for_impl(db: &dyn SyntaxGroup, impl_ast: ast::ItemImpl) -> PluginResult {
+fn generate_trait_for_impl<'db>(
+    db: &'db dyn Database,
+    impl_ast: ast::ItemImpl<'db>,
+) -> PluginResult<'db> {
     let Some(attr) = impl_ast.attributes(db).find_attr(db, GENERATE_TRAIT_ATTR) else {
         return PluginResult::default();
     };
@@ -76,7 +80,7 @@ fn generate_trait_for_impl(db: &dyn SyntaxGroup, impl_ast: ast::ItemImpl) -> Plu
     for attr_arg in attr.structurize(db).args {
         match attr_arg.variant {
             AttributeArgVariant::Unnamed(ast::Expr::FunctionCall(attr_arg))
-                if attr_arg.path(db).as_syntax_node().get_text_without_trivia(db)
+                if attr_arg.path(db).as_syntax_node().get_text_without_trivia(db).long(db)
                     == "trait_attrs" =>
             {
                 for arg in attr_arg.arguments(db).arguments(db).elements(db) {
@@ -100,14 +104,16 @@ fn generate_trait_for_impl(db: &dyn SyntaxGroup, impl_ast: ast::ItemImpl) -> Plu
     let impl_generic_params = impl_ast.generic_params(db);
     let generic_params_match = match trait_ast_segment {
         ast::PathSegment::WithGenericArgs(segment) => {
+            let generic_args = segment.generic_args(db).generic_args(db);
             builder.add_node(segment.ident(db).as_syntax_node());
             if let ast::OptionWrappedGenericParamList::WrappedGenericParamList(
                 impl_generic_params,
             ) = impl_generic_params.clone()
             {
                 // TODO(orizi): Support generic args that do not directly match the generic params.
-                let trait_generic_args = segment.generic_args(db).generic_args(db).elements(db);
-                let impl_generic_params = impl_generic_params.generic_params(db).elements(db);
+                let trait_generic_args = generic_args.elements(db);
+                let longer_lived = impl_generic_params.generic_params(db);
+                let impl_generic_params = longer_lived.elements(db);
                 zip(trait_generic_args, impl_generic_params).all(
                     |(trait_generic_arg, impl_generic_param)| {
                         let ast::GenericArg::Unnamed(trait_generic_arg) = trait_generic_arg else {
@@ -264,6 +270,7 @@ fn generate_trait_for_impl(db: &dyn SyntaxGroup, impl_ast: ast::ItemImpl) -> Plu
             code_mappings,
             aux_data: None,
             diagnostics_note: Default::default(),
+            is_unhygienic: false,
         }),
         diagnostics,
         remove_original_item: false,

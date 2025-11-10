@@ -108,6 +108,10 @@ mod test_contract {
         pub non_zeros: super::NonZeros,
         pub vecs: super::Vecs,
         pub queryable_enum: super::QueryableEnum,
+        pub option_value: Option<u32>,
+        pub offset_option_value: (felt252, Option<u32>),
+        pub result_value: Result<u32, u32>,
+        pub offset_result_value: (felt252, Result<u32, u32>),
     }
 }
 
@@ -240,31 +244,65 @@ fn test_storage_vec_of_vecs() {
 fn test_enum_sub_pointers() {
     let mut state = test_contract::contract_state_for_testing();
     state.queryable_enum.write(QueryableEnum::A);
-    if let QueryableEnumVariants::A(_) = (@state)
-        .queryable_enum
-        .sub_pointers() {} else {
-            panic!("expected QueryableEnumVariants::A(_)");
-        }
+    let QueryableEnumVariants::A(_) = (@state).queryable_enum.sub_pointers() else {
+        panic!("expected QueryableEnumVariants::A(_)");
+    };
     state.queryable_enum.write(QueryableEnum::B(123_u128));
-    if let QueryableEnumVariants::B(ptr) = (@state).queryable_enum.sub_pointers() {
-        assert_eq!(ptr.read(), 123);
-    } else {
+    let QueryableEnumVariants::B(ptr) = (@state).queryable_enum.sub_pointers() else {
         panic!("expected QueryableEnumVariants::B(_)");
-    }
+    };
+    assert_eq!(ptr.read(), 123);
     state.queryable_enum.write(QueryableEnum::C(456_u256));
-    if let QueryableEnumVariants::C(ptr) = (@state).queryable_enum.sub_pointers() {
-        assert_eq!(ptr.low.read(), 456);
-        assert_eq!(ptr.high.read(), 0);
-    } else {
+    let QueryableEnumVariants::C(ptr) = (@state).queryable_enum.sub_pointers() else {
         panic!("expected QueryableEnumVariants::C(_)");
-    }
+    };
+    assert_eq!(ptr.low.read(), 456);
+    assert_eq!(ptr.high.read(), 0);
     state.queryable_enum.write(QueryableEnum::C(789_u256));
-    if let QueryableEnumVariants::C(ptr) = (@state).queryable_enum.sub_pointers() {
-        assert_eq!(ptr.low.read(), 789);
-        assert_eq!(ptr.high.read(), 0);
-    } else {
+    let QueryableEnumVariants::C(ptr) = (@state).queryable_enum.sub_pointers() else {
         panic!("expected QueryableEnumVariants::C(_)");
-    }
+    };
+    assert_eq!(ptr.low.read(), 789);
+    assert_eq!(ptr.high.read(), 0);
+}
+
+#[test]
+fn test_option_and_result_base_access() {
+    let mut state = test_contract::contract_state_for_testing();
+    state.option_value.write(Some(101_u32));
+    state.offset_option_value.write((202_felt252, Some(102_u32)));
+    state.result_value.write(Ok(103_u32));
+    state.offset_result_value.write((204_felt252, Ok(104_u32)));
+    assert_eq!((@state).option_value.read(), Some(101));
+    assert_eq!((@state).offset_option_value.read(), (202_felt252, Some(102_u32)));
+    assert_eq!((@state).result_value.read(), Ok(103));
+    assert_eq!((@state).offset_result_value.read(), (204_felt252, Ok(104_u32)));
+    state.option_value.write(None);
+    state.offset_option_value.write((205_felt252, None));
+    state.result_value.write(Err(106_u32));
+    state.offset_result_value.write((207_felt252, Err(107_u32)));
+    assert_eq!((@state).option_value.read(), None);
+    assert_eq!((@state).offset_option_value.read(), (205_felt252, None));
+    assert_eq!((@state).result_value.read(), Err(106));
+    assert_eq!((@state).offset_result_value.read(), (207_felt252, Err(107_u32)));
+}
+
+#[test]
+fn test_option_sub_pointers() {
+    let mut state = test_contract::contract_state_for_testing();
+    assert!((@state).option_value.sub_pointers().is_none());
+    state.option_value.write(Some(123_u32));
+    let Some(ptr) = (@state).option_value.sub_pointers() else {
+        panic!("expected Some(_)");
+    };
+    assert_eq!(ptr.read(), 123);
+
+    let Some(ptr) = state.option_value.sub_pointers_mut() else {
+        panic!("expected Some(_)");
+    };
+    assert_eq!(ptr.read(), 123);
+    ptr.write(234);
+    assert_eq!(state.option_value.read(), Some(234));
 }
 
 #[test]

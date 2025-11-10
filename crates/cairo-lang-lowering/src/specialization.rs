@@ -3,11 +3,13 @@ use std::vec;
 use cairo_lang_debug::DebugWithDb;
 use cairo_lang_diagnostics::Maybe;
 use cairo_lang_semantic::helper::ModuleHelper;
-use cairo_lang_semantic::items::constant::ConstValue;
-use cairo_lang_semantic::items::functions::{GenericFunctionId, InlineConfiguration};
+use cairo_lang_semantic::items::constant::ConstValueId;
+use cairo_lang_semantic::items::functions::GenericFunctionId;
+use cairo_lang_semantic::items::structure::StructSemantic;
 use cairo_lang_semantic::{ConcreteTypeId, GenericArgumentId, TypeId, TypeLongId};
-use cairo_lang_utils::LookupIntern;
+use cairo_lang_utils::extract_matches;
 use itertools::{Itertools, chain, zip_eq};
+use salsa::Database;
 
 use crate::blocks::BlocksBuilder;
 use crate::db::LoweringGroup;
@@ -15,25 +17,30 @@ use crate::ids::{self, LocationId, SemanticFunctionIdEx, SpecializedFunction};
 use crate::lower::context::{VarRequest, VariableAllocator};
 use crate::{
     Block, BlockEnd, DependencyType, Lowered, LoweringStage, Statement, StatementCall,
-    StatementConst, StatementStructConstruct, VarUsage, VariableId,
+    StatementConst, StatementSnapshot, StatementStructConstruct, VarUsage, VariableId,
 };
 
 // A const argument for a specialized function.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
-pub enum SpecializationArg {
-    Const(ConstValue),
-    EmptyArray(TypeId),
-    Struct(Vec<SpecializationArg>),
+pub enum SpecializationArg<'db> {
+    Const { value: ConstValueId<'db>, boxed: bool },
+    Snapshot(Box<SpecializationArg<'db>>),
+    Array(TypeId<'db>, Vec<SpecializationArg<'db>>),
+    Struct(Vec<SpecializationArg<'db>>),
 }
 
-impl<'a> DebugWithDb<dyn LoweringGroup + 'a> for SpecializationArg {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-        db: &(dyn LoweringGroup + 'a),
-    ) -> std::fmt::Result {
+impl<'a> DebugWithDb<'a> for SpecializationArg<'a> {
+    type Db = dyn Database;
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>, db: &'a dyn Database) -> std::fmt::Result {
         match self {
-            SpecializationArg::Const(value) => write!(f, "{:?}", value.debug(db)),
+            SpecializationArg::Const { value, boxed } => {
+                write!(f, "{:?}", value.debug(db))?;
+                if *boxed {
+                    write!(f, ".into_box()")?;
+                }
+                Ok(())
+            }
+            SpecializationArg::Snapshot(inner) => write!(f, "@{:?}", inner.debug(db)),
             SpecializationArg::Struct(inner) => {
                 write!(f, "{{")?;
                 let mut inner = inner.iter().peekable();
@@ -49,29 +56,43 @@ impl<'a> DebugWithDb<dyn LoweringGroup + 'a> for SpecializationArg {
                 }
                 write!(f, "}}")
             }
-            SpecializationArg::EmptyArray(_) => write!(f, "array![]"),
+            SpecializationArg::Array(_ty, values) => {
+                write!(f, "array![")?;
+                let mut first = true;
+                for value in values {
+                    if !first {
+                        write!(f, ", ")?;
+                    } else {
+                        first = false;
+                    }
+                    write!(f, "{:?}", value.debug(db))?;
+                }
+                write!(f, "]")
+            }
         }
     }
 }
 
 /// The state of the specialization arg building process.
 /// currently only structs require an additional build step.
-enum SpecializationArgBuildingState<'a> {
-    Initial(&'a SpecializationArg),
+enum SpecializationArgBuildingState<'db, 'a> {
+    Initial(&'a SpecializationArg<'db>),
+    TakeSnapshot(VariableId),
     BuildStruct(Vec<VariableId>),
+    PushBackArray { in_array: VariableId, value: VariableId },
 }
 
 /// Returns the lowering of a specialized function.
-pub fn specialized_function_lowered(
-    db: &dyn LoweringGroup,
-    specialized: SpecializedFunction,
-) -> Maybe<Lowered> {
+pub fn specialized_function_lowered<'db>(
+    db: &'db dyn Database,
+    specialized: SpecializedFunction<'db>,
+) -> Maybe<Lowered<'db>> {
     let base = db.lowered_body(specialized.base, LoweringStage::Monomorphized)?;
     let base_semantic = specialized.base.base_semantic_function(db);
 
-    let array_new_fn = GenericFunctionId::Extern(
-        ModuleHelper::core(db).submodule("array").extern_function_id("array_new"),
-    );
+    let array_module = ModuleHelper::core(db).submodule("array");
+    let array_new_fn = GenericFunctionId::Extern(array_module.extern_function_id("array_new"));
+    let array_append = GenericFunctionId::Extern(array_module.extern_function_id("array_append"));
 
     let mut variables =
         VariableAllocator::new(db, base_semantic.function_with_body_id(db), Default::default())?;
@@ -98,32 +119,57 @@ pub fn specialized_function_lowered(
     while let Some((var_id, state)) = stack.pop() {
         match state {
             SpecializationArgBuildingState::Initial(c) => match c {
-                SpecializationArg::Const(value) => {
-                    statements.push(Statement::Const(StatementConst {
-                        value: value.clone(),
-                        output: var_id,
-                    }));
+                SpecializationArg::Const { value, boxed } => {
+                    statements.push(Statement::Const(StatementConst::new(*value, var_id, *boxed)));
                 }
-                SpecializationArg::EmptyArray(ty) => {
+                SpecializationArg::Snapshot(inner) => {
+                    let snap_ty = variables.variables[var_id].ty;
+                    let denapped_ty = *extract_matches!(snap_ty.long(db), TypeLongId::Snapshot);
+                    let desnapped_var = variables.new_var(VarRequest { ty: denapped_ty, location });
+                    stack.push((
+                        var_id,
+                        SpecializationArgBuildingState::TakeSnapshot(desnapped_var),
+                    ));
+                    stack.push((
+                        desnapped_var,
+                        SpecializationArgBuildingState::Initial(inner.as_ref()),
+                    ));
+                }
+                SpecializationArg::Array(ty, values) => {
+                    let mut arr_var = var_id;
+                    for value in values.iter().rev() {
+                        let in_arr_var =
+                            variables.variables.alloc(variables.variables[var_id].clone());
+                        let value_var = variables.new_var(VarRequest { ty: *ty, location });
+                        stack.push((
+                            arr_var,
+                            SpecializationArgBuildingState::PushBackArray {
+                                in_array: in_arr_var,
+                                value: value_var,
+                            },
+                        ));
+                        stack.push((value_var, SpecializationArgBuildingState::Initial(value)));
+                        arr_var = in_arr_var;
+                    }
                     statements.push(Statement::Call(StatementCall {
                         function: array_new_fn
                             .concretize(db, vec![GenericArgumentId::Type(*ty)])
                             .lowered(db),
                         inputs: vec![],
                         with_coupon: false,
-                        outputs: vec![var_id],
+                        outputs: vec![arr_var],
                         location: variables[var_id].location,
                     }));
                 }
                 SpecializationArg::Struct(consts) => {
                     let var = &variables[var_id];
                     let TypeLongId::Concrete(ConcreteTypeId::Struct(concrete_struct)) =
-                        var.ty.lookup_intern(db)
+                        var.ty.long(db)
                     else {
                         unreachable!("Expected a concrete struct type");
                     };
 
-                    let members = db.concrete_struct_members(concrete_struct)?;
+                    let members = db.concrete_struct_members(*concrete_struct)?;
 
                     let location = var.location;
                     let var_ids = members
@@ -141,6 +187,31 @@ pub fn specialized_function_lowered(
                     }
                 }
             },
+            SpecializationArgBuildingState::TakeSnapshot(desnapped_var) => {
+                let ignored = variables.variables.alloc(variables[desnapped_var].clone());
+                statements.push(Statement::Snapshot(StatementSnapshot::new(
+                    VarUsage { var_id: desnapped_var, location },
+                    ignored,
+                    var_id,
+                )));
+            }
+            SpecializationArgBuildingState::PushBackArray { in_array, value } => {
+                statements.push(Statement::Call(StatementCall {
+                    function: array_append
+                        .concretize(
+                            db,
+                            vec![GenericArgumentId::Type(variables.variables[value].ty)],
+                        )
+                        .lowered(db),
+                    inputs: vec![
+                        VarUsage { var_id: in_array, location },
+                        VarUsage { var_id: value, location },
+                    ],
+                    with_coupon: false,
+                    outputs: vec![var_id],
+                    location,
+                }));
+            }
             SpecializationArgBuildingState::BuildStruct(ids) => {
                 statements.push(Statement::StructConstruct(StatementStructConstruct {
                     inputs: ids
@@ -178,37 +249,26 @@ pub fn specialized_function_lowered(
 }
 
 /// Query implementation of [LoweringGroup::priv_should_specialize].
-pub fn priv_should_specialize(
-    db: &dyn LoweringGroup,
-    function_id: ids::ConcreteFunctionWithBodyId,
+#[salsa::tracked]
+pub fn priv_should_specialize<'db>(
+    db: &'db dyn Database,
+    function_id: ids::ConcreteFunctionWithBodyId<'db>,
 ) -> Maybe<bool> {
-    let ids::ConcreteFunctionWithBodyLongId::Specialized(specialized_func) =
-        function_id.lookup_intern(db)
+    let ids::ConcreteFunctionWithBodyLongId::Specialized(SpecializedFunction { base, .. }) =
+        function_id.long(db)
     else {
         panic!("Expected a specialized function");
     };
-
-    // If the function is marked as #[inline(never)], it should not be specialized.
-    let inline_config = db.function_declaration_inline_config(
-        specialized_func.base.base_semantic_function(db).function_with_body_id(db),
-    )?;
-    if let InlineConfiguration::Never(_) = inline_config {
-        return Ok(false);
-    }
 
     // Breaks cycles.
     // We cannot estimate the size of functions in a cycle, since the implicits computation requires
     // the finalized lowering of all the functions in the cycle which requires us to know the
     // answer of the current function.
-    if db.concrete_in_cycle(
-        specialized_func.base,
-        DependencyType::Call,
-        LoweringStage::Monomorphized,
-    )? {
+    if db.concrete_in_cycle(*base, DependencyType::Call, LoweringStage::Monomorphized)? {
         return Ok(false);
     }
 
     // The heuristic is that the size is 8/10*orig_size > specialized_size of the original size.
-    Ok(db.estimate_size(specialized_func.base)?.saturating_mul(8)
+    Ok(db.estimate_size(*base)?.saturating_mul(8)
         > db.estimate_size(function_id)?.saturating_mul(10))
 }

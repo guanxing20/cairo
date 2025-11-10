@@ -1,4 +1,3 @@
-use std::fmt::Debug;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,6 +9,10 @@ use colored::Colorize;
 use ignore::WalkState::Continue;
 use ignore::{DirEntry, Error, ParallelVisitor, ParallelVisitorBuilder, WalkState};
 use log::warn;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Outputs a string to stderr if the verbose flag is true.
 fn eprintln_if_verbose(s: &str, verbose: bool) {
@@ -55,7 +58,7 @@ struct FormatterArgs {
     /// Enable merging of `use` items.
     #[arg(long)]
     merge_use_items: Option<bool>,
-    ///  Enable duplicates in `use` items.
+    /// Enable duplicates in `use` items.
     #[arg(long)]
     allow_duplicates: Option<bool>,
     /// A list of files and directories to format. Use "-" for stdin.
@@ -198,7 +201,7 @@ fn format_stdin(args: &FormatterArgs, fmt: &CairoFormatter) -> bool {
 }
 
 fn main() -> ExitCode {
-    init_logging(log::LevelFilter::Off);
+    init_logging(tracing::Level::ERROR);
     log::info!("Starting formatting.");
 
     let args = FormatterArgs::parse();

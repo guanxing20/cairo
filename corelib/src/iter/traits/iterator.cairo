@@ -1,6 +1,7 @@
+use crate::iter::adapters::zip::zipped_iterator;
 use crate::iter::adapters::{
     Chain, Enumerate, Filter, Map, Peekable, Take, Zip, chained_iterator, enumerated_iterator,
-    filter_iterator, mapped_iterator, peekable_iterator, take_iterator, zipped_iterator,
+    filter_iterator, mapped_iterator, peekable_iterator, take_iterator,
 };
 use crate::iter::traits::{Product, Sum};
 use crate::metaprogramming::TypeEqual;
@@ -80,8 +81,7 @@ pub trait Iterator<T> {
     fn count<+Destruct<T>, +Destruct<Self::Item>>(
         self: T,
     ) -> usize {
-        let mut self = self;
-        Self::fold(ref self, 0_usize, |count, _x| {
+        Self::fold(self, 0_usize, |count, _x| {
             count + 1
         })
     }
@@ -184,7 +184,7 @@ pub trait Iterator<T> {
     /// assert_eq!(iter.nth(1), None);
     /// ```
     ///
-    /// Returning `None` if there are less than `n + 1` elements:
+    /// Returning `None` if there are fewer than `n + 1` elements:
     ///
     /// ```
     /// let mut iter = array![1, 2, 3].into_iter();
@@ -374,11 +374,12 @@ pub trait Iterator<T> {
         +Destruct<F>,
         +Destruct<B>,
     >(
-        ref self: T, init: B, f: F,
+        self: T, init: B, f: F,
     ) -> B {
+        let mut self = self;
         match Self::next(ref self) {
             None => init,
-            Some(x) => Self::fold(ref self, f(init, x), f),
+            Some(x) => Self::fold(self, f(init, x), f),
         }
     }
 
@@ -781,7 +782,7 @@ pub trait Iterator<T> {
 
     /// Takes two iterators and creates a new iterator over both in sequence.
     ///
-    /// `chain()` will return a new iterator which will first iterate over
+    /// `chain()` will return a new iterator that will first iterate over
     /// values from the first iterator and then over values from the second
     /// iterator.
     ///

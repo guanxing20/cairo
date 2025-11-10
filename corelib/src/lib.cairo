@@ -235,10 +235,10 @@ impl Felt252PartialEq of PartialEq<felt252> {
     }
 }
 
-extern fn felt252_is_zero(lhs: felt252) -> zeroable::IsZeroResult<felt252> nopanic;
+extern const fn felt252_is_zero(lhs: felt252) -> zeroable::IsZeroResult<felt252> nopanic;
 
 impl Felt252TryIntoNonZero of TryInto<felt252, NonZero<felt252>> {
-    fn try_into(self: felt252) -> Option<NonZero<felt252>> {
+    const fn try_into(self: felt252) -> Option<NonZero<felt252>> {
         match felt252_is_zero(self) {
             zeroable::IsZeroResult::Zero => None,
             zeroable::IsZeroResult::NonZero(x) => Some(x),
@@ -431,6 +431,8 @@ use string::StringLiteral;
 mod fixed_size_array;
 
 pub mod iter;
+
+mod keyword_docs;
 
 pub mod metaprogramming;
 

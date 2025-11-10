@@ -4,13 +4,13 @@ use cairo_lang_defs::plugin::{
     PluginGeneratedFile,
 };
 use cairo_lang_defs::plugin_utils::{PluginResultTrait, not_legacy_macro_diagnostic};
-use cairo_lang_filesystem::ids::{CodeMapping, CodeOrigin};
+use cairo_lang_filesystem::ids::{CodeMapping, CodeOrigin, SmolStrId};
 use cairo_lang_filesystem::span::TextSpan;
 use cairo_lang_parser::macro_helpers::AsLegacyInlineMacro;
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{TypedSyntaxNode, ast};
 use indoc::indoc;
 use num_bigint::BigInt;
+use salsa::Database;
 
 #[derive(Debug, Default)]
 pub struct ConstevalIntMacro;
@@ -18,12 +18,12 @@ impl NamedPlugin for ConstevalIntMacro {
     const NAME: &'static str = "consteval_int";
 }
 impl InlineMacroExprPlugin for ConstevalIntMacro {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        syntax: &ast::ExprInlineMacro,
+        db: &'db dyn Database,
+        syntax: &ast::ExprInlineMacro<'db>,
         metadata: &MacroPluginMetadata<'_>,
-    ) -> InlinePluginResult {
+    ) -> InlinePluginResult<'db> {
         let Some(legacy_inline_macro) = syntax.clone().as_legacy_inline_macro(db) else {
             return InlinePluginResult::diagnostic_only(not_legacy_macro_diagnostic(
                 syntax.as_syntax_node().stable_ptr(db),
@@ -37,15 +37,15 @@ impl InlineMacroExprPlugin for ConstevalIntMacro {
         );
 
         let mut diagnostics = vec![];
-        const DEPRECATION_FEATURE: &str = r#""deprecated-consteval-int-macro""#;
-        if !metadata.allowed_features.contains(DEPRECATION_FEATURE) {
+        let deprecation_feature = SmolStrId::from(db, r#""deprecated-consteval-int-macro""#);
+        if !metadata.allowed_features.contains(&deprecation_feature) {
             diagnostics.push(PluginDiagnostic::warning(
                 syntax.stable_ptr(db),
                 format!(
-                    "Usage of deprecated macro `{}` with no `#[feature({DEPRECATION_FEATURE})]` \
-                     attribute. Note: Use simple calculations instead, as these are supported in \
-                     const context.",
-                    Self::NAME
+                    "Usage of deprecated macro `{}` with no `#[feature({})]` attribute. Note: Use \
+                     simple calculations instead, as these are supported in const context.",
+                    Self::NAME,
+                    deprecation_feature.long(db),
                 ),
             ));
         }
@@ -63,6 +63,7 @@ impl InlineMacroExprPlugin for ConstevalIntMacro {
                     }],
                     aux_data: None,
                     diagnostics_note: Default::default(),
+                    is_unhygienic: false,
                 }
             }),
             diagnostics,
@@ -97,11 +98,11 @@ impl InlineMacroExprPlugin for ConstevalIntMacro {
 
 /// Compute the actual value of an integer expression, or fail with diagnostics.
 /// This computation handles arbitrary integers, unlike regular Cairo math.
-pub fn compute_constant_expr(
-    db: &dyn SyntaxGroup,
-    value: &ast::Expr,
-    diagnostics: &mut Vec<PluginDiagnostic>,
-    macro_ast: &ast::ExprInlineMacro,
+pub fn compute_constant_expr<'db>(
+    db: &'db dyn Database,
+    value: &ast::Expr<'db>,
+    diagnostics: &mut Vec<PluginDiagnostic<'db>>,
+    macro_ast: &ast::ExprInlineMacro<'db>,
 ) -> Option<BigInt> {
     match value {
         ast::Expr::Literal(lit) => lit.numeric_value(db),

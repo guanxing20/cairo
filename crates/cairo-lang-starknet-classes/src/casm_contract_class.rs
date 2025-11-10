@@ -10,7 +10,7 @@ use cairo_lang_sierra::extensions::circuit::{AddModType, MulModType};
 use cairo_lang_sierra::extensions::ec::EcOpType;
 use cairo_lang_sierra::extensions::enm::EnumType;
 use cairo_lang_sierra::extensions::felt252::Felt252Type;
-use cairo_lang_sierra::extensions::gas::{CostTokenType, GasBuiltinType};
+use cairo_lang_sierra::extensions::gas::{CostTokenMap, CostTokenType, GasBuiltinType};
 use cairo_lang_sierra::extensions::pedersen::PedersenType;
 use cairo_lang_sierra::extensions::poseidon::PoseidonType;
 use cairo_lang_sierra::extensions::range_check::{RangeCheck96Type, RangeCheckType};
@@ -26,8 +26,8 @@ use cairo_lang_sierra_to_casm::compiler::{
 use cairo_lang_sierra_to_casm::metadata::{
     MetadataComputationConfig, MetadataError, calc_metadata,
 };
+use cairo_lang_sierra_type_size::ProgramRegistryInfo;
 use cairo_lang_utils::bigint::{BigUintAsHex, deserialize_big_uint, serialize_big_uint};
-use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::require;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
 use cairo_lang_utils::unordered_hash_set::UnorderedHashSet;
@@ -117,7 +117,7 @@ pub struct CasmContractClass {
     pub bytecode_segment_lengths: Option<NestedIntList>,
     pub hints: Vec<(usize, Vec<Hint>)>,
 
-    // Optional pythonic hints in a format that can be executed by the python vm.
+    // Optional Pythonic hints in a format that can be executed by the Python VM.
     #[serde(skip_serializing_if = "skip_if_none")]
     pub pythonic_hints: Option<Vec<(usize, Vec<String>)>>,
     pub entry_points_by_type: CasmContractEntryPoints,
@@ -421,17 +421,22 @@ impl CasmContractClass {
         let no_eq_solver = sierra_version.minor >= 4;
         let metadata_computation_config = MetadataComputationConfig {
             function_set_costs: entrypoint_ids
-                .map(|id| (id, [(CostTokenType::Const, ENTRY_POINT_COST)].into()))
+                .map(|id| (id, CostTokenMap::from_iter([(CostTokenType::Const, ENTRY_POINT_COST)])))
                 .collect(),
             linear_gas_solver: no_eq_solver,
             linear_ap_change_solver: no_eq_solver,
             skip_non_linear_solver_comparisons: false,
             compute_runtime_costs: false,
         };
-        let metadata = calc_metadata(&program, metadata_computation_config)?;
-
+        let program_info = ProgramRegistryInfo::new(&program).map_err(|err| {
+            StarknetSierraCompilationError::CompilationError(Box::new(
+                CompilationError::ProgramRegistryError(err),
+            ))
+        })?;
+        let metadata = calc_metadata(&program, &program_info, metadata_computation_config)?;
         let cairo_program = cairo_lang_sierra_to_casm::compiler::compile(
             &program,
+            &program_info,
             &metadata,
             SierraToCasmConfig { gas_usage_check: true, max_bytecode_size },
         )?;
@@ -531,7 +536,7 @@ impl CasmContractClass {
                 .start_offset;
             assert_eq!(
                 metadata.gas_info.function_costs[&function.id],
-                OrderedHashMap::from_iter([(CostTokenType::Const, ENTRY_POINT_COST as i64)]),
+                CostTokenMap::from_iter([(CostTokenType::Const, ENTRY_POINT_COST as i64)]),
                 "Unexpected entry point cost."
             );
             Ok::<CasmContractEntryPoint, StarknetSierraCompilationError>(CasmContractEntryPoint {

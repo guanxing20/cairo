@@ -12,15 +12,17 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Ok};
+use anyhow::Context;
 use cairo_lang_compiler::db::RootDatabase;
 use cairo_lang_compiler::diagnostics::DiagnosticsReporter;
 use cairo_lang_compiler::project::{check_compiler_path, setup_project};
 use cairo_lang_defs::ids::TopLevelLanguageElementId;
 use cairo_lang_diagnostics::ToOption;
 use cairo_lang_executable::compile::{find_executable_functions, originating_function_path};
-use cairo_lang_executable::plugin::executable_plugin_suite;
+use cairo_lang_executable_plugin::executable_plugin_suite;
 use cairo_lang_filesystem::cfg::{Cfg, CfgSet};
+use cairo_lang_filesystem::ids::CrateInput;
+use cairo_lang_lowering::optimizations::config::Optimizations;
 use cairo_lang_lowering::utils::InliningStrategy;
 use cairo_lang_runnable_utils::builder::RunnableBuilder;
 use cairo_lang_runner::profiling::user_function_idx_by_sierra_statement_idx;
@@ -35,6 +37,11 @@ use cairo_lang_syntax::node::{Terminal, TypedSyntaxNode, ast};
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use clap::Parser;
 use itertools::{Itertools, chain};
+use salsa::Database;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Compiles a Cairo project and analyzes the size-related costs of its components.
 /// Exits with a status code of 1 if compilation or analysis fails, and 0 otherwise.
@@ -43,18 +50,18 @@ use itertools::{Itertools, chain};
 struct Args {
     /// The Cairo project path to compile and run.
     path: PathBuf,
-    /// Whether path is a single file.
+    /// Whether the path is a single file.
     #[arg(short, long)]
     single_file: bool,
     /// Allows the compilation to succeed with warnings.
     #[arg(long)]
     allow_warnings: bool,
-    /// A path to a contract to analyze size for.
+    /// A path to a contract to analyze the size of.
     ///
-    /// Implies usage of the starknet plugin.
+    /// Implies usage of the Starknet plugin.
     #[arg(long, conflicts_with = "executable")]
     contract: Option<String>,
-    /// A path to a function to analyze size for.
+    /// A path to a function to analyze the size of.
     ///
     /// Implies executable plugin.
     #[arg(long, conflicts_with = "contract")]
@@ -83,13 +90,15 @@ fn main() -> anyhow::Result<()> {
             .with_default_plugin_suite(executable_plugin_suite());
     }
     if let Some(inline_threshold) = args.inline_threshold {
-        db_builder.with_inlining_strategy(InliningStrategy::InlineSmallFunctions(inline_threshold));
+        db_builder.with_optimizations(Optimizations::enabled_with_default_movable_functions(
+            InliningStrategy::InlineSmallFunctions(inline_threshold),
+        ));
     }
     let db = &mut db_builder.build()?;
 
-    let main_crate_ids = setup_project(db, Path::new(&args.path))?;
+    let main_crate_inputs = setup_project(db, Path::new(&args.path))?;
 
-    let mut reporter = DiagnosticsReporter::stderr().with_crates(&main_crate_ids);
+    let mut reporter = DiagnosticsReporter::stderr().with_crates(&main_crate_inputs);
     if args.allow_warnings {
         reporter = reporter.allow_warnings();
     }
@@ -100,7 +109,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
     };
-
+    let main_crate_ids = CrateInput::into_crate_ids(db, main_crate_inputs);
     let sierra = if let Some(executable_path) = args.executable {
         let executables = find_executable_functions(db, main_crate_ids, None);
         let Some(executable) =
@@ -176,7 +185,7 @@ fn main() -> anyhow::Result<()> {
                 let mut node = loc.syntax_node(db);
                 while let Some(parent) = node.parent(db) {
                     if let Some(name) = try_extract_path_segment_name(db, node) {
-                        segments.push(name.text(db).to_string());
+                        segments.push(name.text(db).to_string(db));
                     }
                     node = parent;
                 }
@@ -212,10 +221,10 @@ fn main() -> anyhow::Result<()> {
 
 /// Tries to extract a relevant name from the provided syntax node.
 /// Used to reconstruct function paths.
-fn try_extract_path_segment_name(
-    db: &mut RootDatabase,
-    node: cairo_lang_syntax::node::SyntaxNode,
-) -> Option<ast::TerminalIdentifier> {
+fn try_extract_path_segment_name<'db>(
+    db: &'db dyn Database,
+    node: cairo_lang_syntax::node::SyntaxNode<'db>,
+) -> Option<ast::TerminalIdentifier<'db>> {
     match node.kind(db) {
         SyntaxKind::FunctionWithBody => {
             Some(ast::FunctionWithBody::from_syntax_node(db, node).declaration(db).name(db))

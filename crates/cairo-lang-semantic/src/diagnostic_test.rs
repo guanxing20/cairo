@@ -1,19 +1,19 @@
 use std::sync::Arc;
 
-use cairo_lang_defs::db::DefsGroup;
+use cairo_lang_defs::db::{DefsGroup, defs_group_input};
 use cairo_lang_defs::ids::{GenericTypeId, MacroPluginLongId, ModuleId, TopLevelLanguageElementId};
 use cairo_lang_defs::patcher::{PatchBuilder, RewriteNode};
 use cairo_lang_defs::plugin::{
     MacroPlugin, MacroPluginMetadata, PluginDiagnostic, PluginGeneratedFile, PluginResult,
 };
-use cairo_lang_syntax::node::db::SyntaxGroup;
+use cairo_lang_filesystem::ids::SmolStrId;
 use cairo_lang_syntax::node::helpers::QueryAttrs;
 use cairo_lang_syntax::node::{TypedStablePtr, ast};
 use indoc::indoc;
 use pretty_assertions::assert_eq;
-use test_log::test;
+use salsa::{Database, Setter};
 
-use crate::db::SemanticGroup;
+use crate::db::{SemanticGroup, semantic_group_input};
 use crate::ids::AnalyzerPluginLongId;
 use crate::items::us::SemanticUseEx;
 use crate::plugin::AnalyzerPlugin;
@@ -40,7 +40,7 @@ cairo_lang_test_utils::test_file_test!(
     test_expr_diagnostics
 );
 
-#[test]
+#[cairo_lang_test_utils::test]
 fn test_missing_module_file() {
     let db_val = SemanticDatabaseForTesting::default();
     let db = &db_val;
@@ -75,12 +75,12 @@ fn test_missing_module_file() {
 struct AddInlineModuleDummyPlugin;
 
 impl MacroPlugin for AddInlineModuleDummyPlugin {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        item_ast: ast::ModuleItem,
+        db: &'db dyn Database,
+        item_ast: ast::ModuleItem<'db>,
         _metadata: &MacroPluginMetadata<'_>,
-    ) -> PluginResult {
+    ) -> PluginResult<'db> {
         match item_ast {
             ast::ModuleItem::FreeFunction(func) if func.has_attr(db, "test_change_return_type") => {
                 let mut builder = PatchBuilder::new(db, &func);
@@ -125,6 +125,7 @@ impl MacroPlugin for AddInlineModuleDummyPlugin {
                         code_mappings,
                         aux_data: None,
                         diagnostics_note: Default::default(),
+                        is_unhygienic: false,
                     }),
                     diagnostics: vec![],
                     remove_original_item: false,
@@ -134,18 +135,18 @@ impl MacroPlugin for AddInlineModuleDummyPlugin {
         }
     }
 
-    fn declared_attributes(&self) -> Vec<String> {
-        vec!["test_change_return_type".to_string()]
+    fn declared_attributes<'db>(&self, db: &'db dyn Database) -> Vec<SmolStrId<'db>> {
+        vec![SmolStrId::from(db, "test_change_return_type")]
     }
 }
 
-#[test]
+#[cairo_lang_test_utils::test]
 fn test_inline_module_diagnostics() {
     let mut db_val = SemanticDatabaseForTesting::new_empty();
     let db = &mut db_val;
-    db.set_default_macro_plugins(Arc::new([
-        db.intern_macro_plugin(MacroPluginLongId(Arc::new(AddInlineModuleDummyPlugin)))
-    ]));
+    defs_group_input(db)
+        .set_default_macro_plugins(db)
+        .to(Some(vec![MacroPluginLongId(Arc::new(AddInlineModuleDummyPlugin))]));
     let crate_id = setup_test_crate(
         db,
         indoc! {"
@@ -176,7 +177,7 @@ fn test_inline_module_diagnostics() {
     );
 }
 
-#[test]
+#[cairo_lang_test_utils::test]
 fn test_inline_inline_module_diagnostics() {
     let db_val = SemanticDatabaseForTesting::default();
     let db = &db_val;
@@ -224,7 +225,11 @@ fn test_inline_inline_module_diagnostics() {
 #[derive(Debug)]
 struct NoU128RenameAnalyzerPlugin;
 impl AnalyzerPlugin for NoU128RenameAnalyzerPlugin {
-    fn diagnostics(&self, db: &dyn SemanticGroup, module_id: ModuleId) -> Vec<PluginDiagnostic> {
+    fn diagnostics<'db>(
+        &self,
+        db: &'db dyn Database,
+        module_id: ModuleId<'db>,
+    ) -> Vec<PluginDiagnostic<'db>> {
         let mut diagnostics = vec![];
         let Ok(uses) = db.module_uses_ids(module_id) else {
             return diagnostics;
@@ -250,13 +255,14 @@ impl AnalyzerPlugin for NoU128RenameAnalyzerPlugin {
     }
 }
 
-#[test]
+#[cairo_lang_test_utils::test]
 fn test_analyzer_diagnostics() {
     let mut db_val = SemanticDatabaseForTesting::new_empty();
     let db = &mut db_val;
-    db.set_default_analyzer_plugins(Arc::new([
-        db.intern_analyzer_plugin(AnalyzerPluginLongId(Arc::new(NoU128RenameAnalyzerPlugin)))
-    ]));
+    let db_ref: &mut dyn Database = db;
+    semantic_group_input(db_ref)
+        .set_default_analyzer_plugins(db_ref)
+        .to(Some(vec![AnalyzerPluginLongId(Arc::new(NoU128RenameAnalyzerPlugin))]));
     let crate_id = setup_test_crate(
         db,
         indoc! {"

@@ -1,18 +1,18 @@
 use std::collections::HashMap;
 
 use cairo_lang_debug::DebugWithDb;
-use cairo_lang_defs::db::DefsGroup;
 use cairo_lang_defs::diagnostic_utils::StableLocation;
 use cairo_lang_defs::ids::LanguageElementId;
 use cairo_lang_diagnostics::{DiagnosticNote, DiagnosticsBuilder};
 use cairo_lang_semantic as semantic;
-use cairo_lang_semantic::db::SemanticGroup;
+use cairo_lang_semantic::items::function_with_body::FunctionWithBodySemantic;
+use cairo_lang_semantic::items::module_type_alias::ModuleTypeAliasSemantic;
 use cairo_lang_semantic::test_utils::{setup_test_expr, setup_test_function, setup_test_module};
 use cairo_lang_syntax::node::{Terminal, TypedStablePtr};
 use cairo_lang_test_utils::parse_test_file::TestRunnerResult;
 use cairo_lang_test_utils::verify_diagnostics_expectation;
+use cairo_lang_utils::extract_matches;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
-use cairo_lang_utils::{LookupIntern, extract_matches};
 use itertools::Itertools;
 use pretty_assertions::assert_eq;
 
@@ -41,6 +41,7 @@ cairo_lang_test_utils::test_file_test!(
         fixed_size_array: "fixed_size_array",
         arm_pattern_destructure: "arm_pattern_destructure",
         if_: "if",
+        inline_macros:"inline_macros",
         implicits: "implicits",
         let_else: "let_else",
         logical_operator: "logical_operator",
@@ -49,6 +50,7 @@ cairo_lang_test_utils::test_file_test!(
         members: "members",
         panic: "panic",
         rebindings: "rebindings",
+        repr_ptr: "repr_ptr",
         snapshot: "snapshot",
         struct_: "struct",
         tests: "tests",
@@ -90,7 +92,7 @@ fn test_function_lowering(
         outputs: OrderedHashMap::from([
             ("semantic_diagnostics".into(), semantic_diagnostics),
             ("lowering_diagnostics".into(), formatted_lowering_diagnostics),
-            ("lowering_flat".into(), formatted_lowered(db, lowered.ok().as_deref())),
+            ("lowering_flat".into(), formatted_lowered(db, lowered.ok())),
         ]),
         error,
     }
@@ -120,7 +122,7 @@ fn test_location_and_diagnostics() {
             db,
             DiagnosticNote::with_location("Adding destructor for".to_string(), expr_location),
         )
-        .lookup_intern(db);
+        .long(db);
 
     assert_eq!(
         format!("{:?}", location.debug(db)),
@@ -141,7 +143,7 @@ a = a * 3
     let mut builder = DiagnosticsBuilder::default();
 
     builder.add(LoweringDiagnostic {
-        location,
+        location: location.clone(),
         kind: LoweringDiagnosticKind::CannotInlineFunctionThatMightCallItself,
     });
 
@@ -203,7 +205,7 @@ fn test_sizes() {
     )
     .unwrap();
     let db: &LoweringDatabaseForTesting = db;
-    let type_aliases = db.module_type_aliases(test_module.module_id).unwrap();
+    let type_aliases = test_module.module_id.module_data(db).unwrap().type_aliases(db);
     assert_eq!(type_aliases.len(), type_to_size.len());
     let alias_expected_size = HashMap::<_, _>::from_iter(
         type_to_size.iter().enumerate().map(|(i, (_, size))| (format!("T{i}"), *size)),
@@ -211,8 +213,8 @@ fn test_sizes() {
     for (alias_id, alias) in type_aliases.iter() {
         let ty = db.module_type_alias_resolved_type(*alias_id).unwrap();
         let size = db.type_size(ty);
-        let alias_name = alias.name(db).text(db);
-        let expected_size = alias_expected_size[alias_name.as_str()];
+        let alias_name = alias.name(db).text(db).long(db).as_str();
+        let expected_size = alias_expected_size[alias_name];
         assert_eq!(size, expected_size, "Wrong size for type alias `{}`", ty.format(db));
     }
 }

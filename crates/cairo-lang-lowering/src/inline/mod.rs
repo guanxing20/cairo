@@ -6,13 +6,13 @@ pub mod statements_weights;
 use cairo_lang_defs::diagnostic_utils::StableLocation;
 use cairo_lang_defs::ids::LanguageElementId;
 use cairo_lang_diagnostics::{Diagnostics, Maybe};
+use cairo_lang_semantic::items::function_with_body::FunctionWithBodySemantic;
 use cairo_lang_semantic::items::functions::InlineConfiguration;
-use cairo_lang_utils::LookupIntern;
 use cairo_lang_utils::casts::IntoOrPanic;
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
-use id_arena::Arena;
 use itertools::{Itertools, zip_eq};
+use salsa::Database;
 
 use crate::blocks::{Blocks, BlocksBuilder};
 use crate::db::LoweringGroup;
@@ -20,51 +20,54 @@ use crate::diagnostic::{
     LoweringDiagnostic, LoweringDiagnosticKind, LoweringDiagnostics, LoweringDiagnosticsBuilder,
 };
 use crate::ids::{
-    ConcreteFunctionWithBodyId, FunctionWithBodyId, FunctionWithBodyLongId, LocationId,
+    ConcreteFunctionWithBodyId, ConcreteFunctionWithBodyLongId, FunctionWithBodyId,
+    FunctionWithBodyLongId, LocationId,
 };
 use crate::optimizations::const_folding::ConstFoldingContext;
 use crate::utils::{InliningStrategy, Rebuilder, RebuilderEx};
 use crate::{
     Block, BlockEnd, BlockId, DependencyType, Lowered, LoweringStage, Statement, StatementCall,
-    VarRemapping, Variable, VariableId,
+    VarRemapping, Variable, VariableArena, VariableId,
 };
 
-pub fn get_inline_diagnostics(
-    db: &dyn LoweringGroup,
-    function_id: FunctionWithBodyId,
-) -> Maybe<Diagnostics<LoweringDiagnostic>> {
-    let inline_config = match function_id.lookup_intern(db) {
-        FunctionWithBodyLongId::Semantic(id) => db.function_declaration_inline_config(id)?,
+pub fn get_inline_diagnostics<'db>(
+    db: &'db dyn Database,
+    function_id: FunctionWithBodyId<'db>,
+) -> Maybe<Diagnostics<'db, LoweringDiagnostic<'db>>> {
+    let inline_config = match function_id.long(db) {
+        FunctionWithBodyLongId::Semantic(id) => db.function_declaration_inline_config(*id)?,
         FunctionWithBodyLongId::Generated { .. } => InlineConfiguration::None,
     };
     let mut diagnostics = LoweringDiagnostics::default();
 
-    if let InlineConfiguration::Always(_) = inline_config {
-        if db.in_cycle(function_id, crate::DependencyType::Call)? {
-            diagnostics.report(
-                function_id.base_semantic_function(db).untyped_stable_ptr(db),
-                LoweringDiagnosticKind::CannotInlineFunctionThatMightCallItself,
-            );
-        }
+    if let InlineConfiguration::Always(_) = inline_config
+        && db.in_cycle(function_id, crate::DependencyType::Call)?
+    {
+        diagnostics.report(
+            function_id.base_semantic_function(db).untyped_stable_ptr(db),
+            LoweringDiagnosticKind::CannotInlineFunctionThatMightCallItself,
+        );
     }
 
     Ok(diagnostics.build())
 }
 
 /// Query implementation of [LoweringGroup::priv_should_inline].
-pub fn priv_should_inline(
-    db: &dyn LoweringGroup,
-    function_id: ConcreteFunctionWithBodyId,
+#[salsa::tracked]
+pub fn priv_should_inline<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
 ) -> Maybe<bool> {
+    if db.priv_never_inline(function_id)? {
+        return Ok(false);
+    }
+
     // Breaks cycles.
     if db.concrete_in_cycle(function_id, DependencyType::Call, LoweringStage::Monomorphized)? {
         return Ok(false);
     }
 
-    let config = db.function_declaration_inline_config(
-        function_id.base_semantic_function(db).function_with_body_id(db),
-    )?;
-    match (db.optimization_config().inlining_strategy, config) {
+    match (db.optimizations().inlining_strategy(), function_inline_config(db, function_id)?) {
         (_, InlineConfiguration::Always(_)) => Ok(true),
         (InliningStrategy::Avoid, _) | (_, InlineConfiguration::Never(_)) => Ok(false),
         (_, InlineConfiguration::Should(_)) => Ok(true),
@@ -80,24 +83,49 @@ pub fn priv_should_inline(
     }
 }
 
+/// Query implementation of [LoweringGroup::priv_never_inline].
+#[salsa::tracked]
+pub fn priv_never_inline<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+) -> Maybe<bool> {
+    Ok(matches!(function_inline_config(db, function_id)?, InlineConfiguration::Never(_)))
+}
+
+/// Returns the [InlineConfiguration] of a function.
+fn function_inline_config<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+) -> Maybe<InlineConfiguration<'db>> {
+    match function_id.long(db) {
+        ConcreteFunctionWithBodyLongId::Semantic(id) => {
+            db.function_declaration_inline_config(id.function_with_body_id(db))
+        }
+        ConcreteFunctionWithBodyLongId::Generated(_) => Ok(InlineConfiguration::None),
+        ConcreteFunctionWithBodyLongId::Specialized(specialized) => {
+            function_inline_config(db, specialized.base)
+        }
+    }
+}
+
 // A heuristic to decide if a function without an inline attribute should be inlined.
 fn should_inline_lowered(
-    db: &dyn LoweringGroup,
-    function_id: ConcreteFunctionWithBodyId,
+    db: &dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'_>,
     inline_small_functions_threshold: usize,
 ) -> Maybe<bool> {
     let weight_of_blocks = db.estimate_size(function_id)?;
     Ok(weight_of_blocks < inline_small_functions_threshold.into_or_panic())
 }
 /// Context for mapping ids from `lowered` to a new `Lowered` object.
-pub struct Mapper<'a> {
-    db: &'a dyn LoweringGroup,
-    variables: &'a mut Arena<Variable>,
-    lowered: &'a Lowered,
+pub struct Mapper<'db, 'mt, 'l> {
+    db: &'db dyn Database,
+    variables: &'mt mut VariableArena<'db>,
+    lowered: &'l Lowered<'db>,
     renamed_vars: UnorderedHashMap<VariableId, VariableId>,
 
     outputs: Vec<VariableId>,
-    inlining_location: StableLocation,
+    inlining_location: StableLocation<'db>,
 
     /// An offset that is added to all the block IDs in order to translate them into the new
     /// lowering representation.
@@ -107,12 +135,12 @@ pub struct Mapper<'a> {
     return_block_id: BlockId,
 }
 
-impl<'a> Mapper<'a> {
+impl<'db, 'mt, 'l> Mapper<'db, 'mt, 'l> {
     pub fn new(
-        db: &'a dyn LoweringGroup,
-        variables: &'a mut Arena<Variable>,
-        lowered: &'a Lowered,
-        call_stmt: StatementCall,
+        db: &'db dyn Database,
+        variables: &'mt mut VariableArena<'db>,
+        lowered: &'l Lowered<'db>,
+        call_stmt: StatementCall<'db>,
         block_id_offset: usize,
     ) -> Self {
         // The input variables need to be renamed to match the inputs to the function call.
@@ -121,7 +149,7 @@ impl<'a> Mapper<'a> {
             call_stmt.inputs.iter().map(|var_usage| var_usage.var_id),
         ));
 
-        let inlining_location = call_stmt.location.lookup_intern(db).stable_location;
+        let inlining_location = call_stmt.location.long(db).stable_location;
 
         Self {
             db,
@@ -136,7 +164,7 @@ impl<'a> Mapper<'a> {
     }
 }
 
-impl Rebuilder for Mapper<'_> {
+impl<'db, 'mt> Rebuilder<'db> for Mapper<'db, 'mt, '_> {
     /// Maps a var id from the original lowering representation to the equivalent id in the
     /// new lowering representation.
     /// If the variable wasn't assigned an id yet, a new id is assigned.
@@ -157,11 +185,11 @@ impl Rebuilder for Mapper<'_> {
     }
 
     /// Adds the inlining location to a location.
-    fn map_location(&mut self, location: LocationId) -> LocationId {
+    fn map_location(&mut self, location: LocationId<'db>) -> LocationId<'db> {
         location.inlined(self.db, self.inlining_location)
     }
 
-    fn transform_end(&mut self, end: &mut BlockEnd) {
+    fn transform_end(&mut self, end: &mut BlockEnd<'db>) {
         match end {
             BlockEnd::Return(returns, _location) => {
                 let remapping = VarRemapping {
@@ -182,15 +210,15 @@ impl Rebuilder for Mapper<'_> {
 ///
 /// This function should be called through `apply_inlining` to remove all the lowered blocks in the
 /// error case.
-fn inner_apply_inlining(
-    db: &dyn LoweringGroup,
-    lowered: &mut Lowered,
-    calling_function_id: ConcreteFunctionWithBodyId,
+fn inner_apply_inlining<'db>(
+    db: &'db dyn Database,
+    lowered: &mut Lowered<'db>,
+    calling_function_id: ConcreteFunctionWithBodyId<'db>,
     mut enable_const_folding: bool,
 ) -> Maybe<()> {
     lowered.blocks.has_root()?;
 
-    let mut blocks = BlocksBuilder::new();
+    let mut blocks: BlocksBuilder<'db> = BlocksBuilder::new();
 
     let mut stack: Vec<std::vec::IntoIter<BlockId>> = vec![
         lowered
@@ -208,9 +236,9 @@ fn inner_apply_inlining(
 
     while let Some(mut func_blocks) = stack.pop() {
         for block_id in func_blocks.by_ref() {
+            let blocks = &mut blocks;
             if enable_const_folding
-                && !const_folding_ctx
-                    .visit_block_start(block_id, |block_id| blocks.get_mut_block(block_id))
+                && !const_folding_ctx.visit_block_start(block_id, |block_id| &blocks.0[block_id.0])
             {
                 continue;
             }
@@ -260,7 +288,7 @@ fn inner_apply_inlining(
             let mut inline_mapper = Mapper::new(
                 db,
                 const_folding_ctx.variables,
-                &inlined_lowered,
+                inlined_lowered,
                 call_stmt,
                 next_block_id,
             );
@@ -297,24 +325,26 @@ fn inner_apply_inlining(
 
 /// Rewrites a statement and either appends it to self.statements or adds new statements to
 /// self.statements_rewrite_stack.
-fn should_inline<'a>(
-    db: &dyn LoweringGroup,
-    calling_function_id: ConcreteFunctionWithBodyId,
-    statement: &'a Statement,
-) -> Maybe<Option<(&'a StatementCall, ConcreteFunctionWithBodyId)>> {
+fn should_inline<'db, 'r>(
+    db: &'db dyn Database,
+    calling_function_id: ConcreteFunctionWithBodyId<'db>,
+    statement: &'r Statement<'db>,
+) -> Maybe<Option<(&'r StatementCall<'db>, ConcreteFunctionWithBodyId<'db>)>>
+where
+    'db: 'r,
+{
     if let Statement::Call(stmt) = statement {
         if stmt.with_coupon {
             return Ok(None);
         }
 
         if let Some(called_func) = stmt.function.body(db)? {
-            if let crate::ids::ConcreteFunctionWithBodyLongId::Specialized(specialized) =
-                calling_function_id.lookup_intern(db)
+            if let ConcreteFunctionWithBodyLongId::Specialized(specialized) =
+                calling_function_id.long(db)
+                && specialized.base == called_func
             {
-                if specialized.base == called_func {
-                    // A specialized function should always inline its base.
-                    return Ok(Some((stmt, called_func)));
-                }
+                // A specialized function should always inline its base.
+                return Ok(Some((stmt, called_func)));
             }
 
             // TODO: Implement better logic to avoid inlining of destructors that call
@@ -331,10 +361,10 @@ fn should_inline<'a>(
 /// Applies inlining to a lowered function.
 ///
 /// Note that if const folding is enabled, the blocks must be topologically sorted.
-pub fn apply_inlining(
-    db: &dyn LoweringGroup,
-    function_id: ConcreteFunctionWithBodyId,
-    lowered: &mut Lowered,
+pub fn apply_inlining<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+    lowered: &mut Lowered<'db>,
     enable_const_folding: bool,
 ) -> Maybe<()> {
     if let Err(diag_added) = inner_apply_inlining(db, lowered, function_id, enable_const_folding) {

@@ -47,9 +47,7 @@ pub fn egcd<
 ) -> (T, T, T, bool) {
     let (q, r) = DivRem::<T>::div_rem(a.into(), b);
 
-    let r = if let Some(r) = r.try_into() {
-        r
-    } else {
+    let Some(r) = r.try_into() else {
         return (b.into(), core::num::traits::Zero::zero(), core::num::traits::One::one(), false);
     };
 
@@ -91,7 +89,7 @@ pub fn inv_mod<
     a: NonZero<T>, n: NonZero<T>,
 ) -> Option<T> {
     if core::num::traits::One::<T>::is_one(@n.into()) {
-        return Some(core::num::traits::Zero::zero());
+        return None;
     }
     let (g, s, _, sub_direction) = egcd(a, n);
     if g.is_one() {
@@ -111,7 +109,7 @@ pub fn inv_mod<
     }
 }
 
-/// Returns `1 / b (mod n)`, or `None` if `b` is not invertible modulo `n`.
+/// Returns `1 / b (mod n)`, or `Err` if `b` is not invertible modulo `n`.
 ///
 /// All `b`s will be considered not invertible for `n == 1`.
 /// Additionally returns several `U128MulGuarantee`s that are required for validating the

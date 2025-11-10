@@ -1,9 +1,10 @@
 use cairo_lang_defs::plugin::{MacroPlugin, MacroPluginMetadata, PluginDiagnostic, PluginResult};
+use cairo_lang_filesystem::ids::SmolStrId;
 use cairo_lang_syntax::attribute::structured::{AttributeArgVariant, AttributeStructurize};
-use cairo_lang_syntax::node::db::SyntaxGroup;
-use cairo_lang_syntax::node::helpers::QueryAttrs;
-use cairo_lang_syntax::node::{Terminal, TypedSyntaxNode, ast};
+use cairo_lang_syntax::node::helpers::{GetIdentifier, QueryAttrs};
+use cairo_lang_syntax::node::{TypedSyntaxNode, ast};
 use itertools::Itertools;
+use salsa::Database;
 
 #[derive(Debug, Default)]
 #[non_exhaustive]
@@ -16,12 +17,12 @@ const GROUP_ATTR: &str = "group";
 const GROUP_ATTR_SYNTAX: &str = "#[doc(group: \"group name\")]";
 
 impl MacroPlugin for ExternalAttributesValidationPlugin {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        item_ast: ast::ModuleItem,
+        db: &'db dyn Database,
+        item_ast: ast::ModuleItem<'db>,
         _metadata: &MacroPluginMetadata<'_>,
-    ) -> PluginResult {
+    ) -> PluginResult<'db> {
         match get_diagnostics(db, &item_ast) {
             Some(diagnostics) => {
                 PluginResult { code: None, remove_original_item: false, diagnostics }
@@ -30,16 +31,16 @@ impl MacroPlugin for ExternalAttributesValidationPlugin {
         }
     }
 
-    fn declared_attributes(&self) -> Vec<String> {
-        vec![DOC_ATTR.to_string()]
+    fn declared_attributes<'db>(&self, db: &'db dyn Database) -> Vec<SmolStrId<'db>> {
+        vec![SmolStrId::from(db, DOC_ATTR)]
     }
 }
 
-fn get_diagnostics<Item: QueryAttrs>(
-    db: &dyn SyntaxGroup,
+fn get_diagnostics<'a, Item: QueryAttrs<'a>>(
+    db: &'a dyn Database,
     item: &Item,
-) -> Option<Vec<PluginDiagnostic>> {
-    let mut diagnostics: Vec<PluginDiagnostic> = Vec::new();
+) -> Option<Vec<PluginDiagnostic<'a>>> {
+    let mut diagnostics: Vec<PluginDiagnostic<'_>> = Vec::new();
     item.query_attr(db, DOC_ATTR).for_each(|attr| {
         let args = attr.clone().structurize(db).args;
         if args.is_empty() {
@@ -70,7 +71,7 @@ fn get_diagnostics<Item: QueryAttrs>(
                     ));
                     return;
                 };
-                if segment.ident(db).text(db) != HIDDEN_ATTR {
+                if segment.identifier(db).long(db) != HIDDEN_ATTR {
                     diagnostics.push(PluginDiagnostic::error(
                         path.stable_ptr(db),
                         format!(
@@ -82,7 +83,7 @@ fn get_diagnostics<Item: QueryAttrs>(
             }
             AttributeArgVariant::Named { name, value } => match value {
                 ast::Expr::String(_) => {
-                    if name.text != GROUP_ATTR {
+                    if name.text.long(db) != GROUP_ATTR {
                         diagnostics.push(PluginDiagnostic::error(
                             arg.arg.stable_ptr(db),
                             format!(

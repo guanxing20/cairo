@@ -1,9 +1,9 @@
 use cairo_lang_syntax::attribute::consts::FMT_SKIP_ATTR;
 use cairo_lang_syntax::node::ast::MaybeModuleBody;
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::QueryAttrs;
 use cairo_lang_syntax::node::kind::SyntaxKind;
 use cairo_lang_syntax::node::{SyntaxNode, TypedSyntaxNode, ast};
+use salsa::Database;
 
 use crate::formatter_impl::{
     BreakLinePointIndentation, BreakLinePointProperties, BreakLinePointsPositions,
@@ -11,8 +11,8 @@ use crate::formatter_impl::{
 };
 use crate::{CollectionsBreakingBehavior, FormatterConfig};
 
-impl SyntaxNodeFormat for SyntaxNode {
-    fn force_no_space_before(&self, db: &dyn SyntaxGroup) -> bool {
+impl<'a> SyntaxNodeFormat for SyntaxNode<'a> {
+    fn force_no_space_before(&self, db: &dyn Database) -> bool {
         match self.kind(db) {
             SyntaxKind::TokenDot
             | SyntaxKind::TokenColonColon
@@ -94,7 +94,7 @@ impl SyntaxNodeFormat for SyntaxNode {
         }
     }
 
-    fn force_no_space_after(&self, db: &dyn SyntaxGroup) -> bool {
+    fn force_no_space_after(&self, db: &dyn Database) -> bool {
         match self.kind(db) {
             SyntaxKind::TokenDot
             | SyntaxKind::TokenNot
@@ -150,7 +150,7 @@ impl SyntaxNodeFormat for SyntaxNode {
             {
                 true
             }
-            SyntaxKind::TokenMinus | SyntaxKind::TokenMul => {
+            SyntaxKind::TokenMinus | SyntaxKind::TokenMul | SyntaxKind::TokenAnd => {
                 matches!(self.grandparent_kind(db), Some(SyntaxKind::ExprUnary))
             }
             SyntaxKind::TokenPlus
@@ -190,10 +190,10 @@ impl SyntaxNodeFormat for SyntaxNode {
         }
     }
     // TODO(gil): consider removing this function as it is no longer used.
-    fn allow_newline_after(&self, _db: &dyn SyntaxGroup) -> bool {
+    fn allow_newline_after(&self, _db: &dyn Database) -> bool {
         false
     }
-    fn allowed_empty_between(&self, db: &dyn SyntaxGroup) -> usize {
+    fn allowed_empty_between(&self, db: &dyn Database) -> usize {
         match self.kind(db) {
             SyntaxKind::ModuleItemList | SyntaxKind::ImplItemList | SyntaxKind::TraitItemList => 2,
             SyntaxKind::StatementList => 1,
@@ -201,7 +201,7 @@ impl SyntaxNodeFormat for SyntaxNode {
         }
     }
     // TODO(Gil): Add all protected zones and break points when the formatter is stable.
-    fn get_protected_zone_precedence(&self, db: &dyn SyntaxGroup) -> Option<usize> {
+    fn get_protected_zone_precedence(&self, db: &dyn Database) -> Option<usize> {
         match self.parent_kind(db) {
             // TODO(Gil): protected zone preferences should be local for each syntax node.
             Some(
@@ -384,7 +384,8 @@ impl SyntaxNodeFormat for SyntaxNode {
                         | SyntaxKind::ExprListParenthesized
                         | SyntaxKind::ArgListBraced
                         | SyntaxKind::ArgListBracketed
-                        | SyntaxKind::ExprUnary => Some(1),
+                        | SyntaxKind::ExprUnary => Some(9),
+                        SyntaxKind::LetElseClause => Some(7),
                         SyntaxKind::TerminalEq => Some(10),
                         SyntaxKind::PatternEnum
                         | SyntaxKind::PatternTuple
@@ -466,7 +467,7 @@ impl SyntaxNodeFormat for SyntaxNode {
     }
     fn get_wrapping_break_line_point_properties(
         &self,
-        db: &dyn SyntaxGroup,
+        db: &dyn Database,
     ) -> BreakLinePointsPositions {
         // TODO(Gil): Make it easier to order the break points precedence.
         match self.parent_kind(db) {
@@ -757,7 +758,9 @@ impl SyntaxNodeFormat for SyntaxNode {
                         true,
                     ))
                 }
-                SyntaxKind::TerminalAnd => {
+                SyntaxKind::TerminalAnd
+                    if matches!(self.parent_kind(db), Some(SyntaxKind::ExprBinary)) =>
+                {
                     BreakLinePointsPositions::Leading(BreakLinePointProperties::new(
                         13,
                         BreakLinePointIndentation::Indented,
@@ -817,13 +820,25 @@ impl SyntaxNodeFormat for SyntaxNode {
                         true,
                     ))
                 }
+                SyntaxKind::TerminalSemicolon
+                    if self.parent_kind(db) == Some(SyntaxKind::FixedSizeArraySize) =>
+                {
+                    BreakLinePointsPositions::Trailing(BreakLinePointProperties::new(
+                        // The precedence should be less than the wrapping precedence of the
+                        // ExprList.
+                        1,
+                        BreakLinePointIndentation::Indented,
+                        true,
+                        true,
+                    ))
+                }
                 _ => BreakLinePointsPositions::None,
             },
         }
     }
     fn get_internal_break_line_point_properties(
         &self,
-        db: &dyn SyntaxGroup,
+        db: &dyn Database,
         config: &FormatterConfig,
     ) -> BreakLinePointsPositions {
         match self.kind(db) {
@@ -929,8 +944,9 @@ impl SyntaxNodeFormat for SyntaxNode {
         }
     }
 
-    fn should_skip_terminal(&self, db: &dyn SyntaxGroup) -> bool {
-        let is_last = |node: &SyntaxNode, siblings: &[SyntaxNode]| siblings.last() == Some(node);
+    fn should_skip_terminal(&self, db: &dyn Database) -> bool {
+        let is_last =
+            |node: &SyntaxNode<'_>, siblings: &[SyntaxNode<'_>]| siblings.last() == Some(node);
         // Check for TerminalComma with specific conditions on list types and position.
         if self.kind(db) == SyntaxKind::TerminalComma
             && matches!(
@@ -961,7 +977,7 @@ impl SyntaxNodeFormat for SyntaxNode {
             );
             if (!is_expr_or_pattern_list || children.len() > 2)
             // Ensure that this node is the last element in the list.
-            && is_last(self, &children)
+            && is_last(self, children)
             {
                 return true;
             }
@@ -976,7 +992,7 @@ impl SyntaxNodeFormat for SyntaxNode {
             let statements_node = statement_node.parent(db).unwrap();
             // Checking if not the last statement, as `;` may be there to prevent the block from
             // returning the value of the current block.
-            let not_last = !is_last(&statement_node, &statements_node.get_children(db));
+            let not_last = !is_last(&statement_node, statements_node.get_children(db));
             let children = statement_node.get_children(db);
             if not_last
                 && matches!(
@@ -997,7 +1013,7 @@ impl SyntaxNodeFormat for SyntaxNode {
         {
             let path_segment_node = self.parent(db).unwrap();
             let path_node = path_segment_node.parent(db).unwrap();
-            if !is_last(&path_segment_node, &path_node.get_children(db)) {
+            if !is_last(&path_segment_node, path_node.get_children(db)) {
                 false
             } else {
                 matches!(
@@ -1018,7 +1034,7 @@ impl SyntaxNodeFormat for SyntaxNode {
     }
 
     // Merge the `as_sort_kind` method here
-    fn as_sort_kind(&self, db: &dyn SyntaxGroup) -> SortKind {
+    fn as_sort_kind(&self, db: &dyn Database) -> SortKind {
         match self.kind(db) {
             SyntaxKind::ItemModule => {
                 let item_module = ast::ItemModule::from_syntax_node(db, *self);
@@ -1032,10 +1048,7 @@ impl SyntaxNodeFormat for SyntaxNode {
             _ => SortKind::Immovable,
         }
     }
-    fn should_ignore_node_format(
-        &self,
-        db: &dyn SyntaxGroup,
-    ) -> Option<IgnoreFormattingSpacingData> {
+    fn should_ignore_node_format(&self, db: &dyn Database) -> Option<IgnoreFormattingSpacingData> {
         if self.has_attr(db, FMT_SKIP_ATTR) {
             return Some(IgnoreFormattingSpacingData {
                 add_space_before: false,
@@ -1055,7 +1068,7 @@ impl SyntaxNodeFormat for SyntaxNode {
 }
 
 /// For statement lists, returns if we want these as a single line.
-fn is_statement_list_break_point_optional(db: &dyn SyntaxGroup, node: &SyntaxNode) -> bool {
+fn is_statement_list_break_point_optional(db: &dyn Database, node: &SyntaxNode<'_>) -> bool {
     // Currently, we only want single line blocks for match arms or generic args, with a single
     // statement, with no single line comments.
     matches!(

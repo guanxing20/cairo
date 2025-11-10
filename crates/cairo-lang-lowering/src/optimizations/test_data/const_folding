@@ -42,6 +42,177 @@ End:
 
 //! > ==========================================================================
 
+//! > Felt252 add overflow const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    PRIME_MINUS_1 + 2
+}
+
+//! > function_name
+foo
+
+//! > module_code
+const PRIME_MINUS_1: felt252 = -1;
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- -1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- core::felt252_add(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- -1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- 1
+End:
+  Return(v2)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 sub overflow const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    0 - 1
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 0
+  (v1: core::felt252) <- 1
+  (v2: core::felt252) <- core::felt252_sub(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 0
+  (v1: core::felt252) <- 1
+  (v2: core::felt252) <- 3618502788666131213697322783095070105623107215331596699973092056135872020480
+End:
+  Return(v2)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 mul overflow const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    PRIME_MINUS_1 * 2
+}
+
+//! > function_name
+foo
+
+//! > module_code
+const PRIME_MINUS_1: felt252 = -1;
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- -1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- core::felt252_mul(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- -1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- 3618502788666131213697322783095070105623107215331596699973092056135872020479
+End:
+  Return(v2)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 combined overflow const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    (PRIME_MINUS_1 + 2) * 2
+}
+
+//! > function_name
+foo
+
+//! > module_code
+const PRIME_MINUS_1: felt252 = -1;
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- -1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- core::felt252_add(v0, v1)
+  (v3: core::felt252) <- 2
+  (v4: core::felt252) <- core::felt252_mul(v2, v3)
+End:
+  Return(v4)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- -1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- 1
+  (v3: core::felt252) <- 2
+  (v4: core::felt252) <- core::felt252_mul(v2, v3)
+End:
+  Return(v3)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
 //! > Basic box const folding.
 
 //! > test_runner_name
@@ -2943,88 +3114,85 @@ End:
 
 blk5:
 Statements:
-  (v17: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v18: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v17)
-  (v19: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v18)
-  (v20: (core::integer::i8,)) <- struct_construct(v16)
-  (v21: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v20)
+  (v17: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v10)
+  (v18: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v17)
+  (v19: (core::integer::i8,)) <- struct_construct(v16)
+  (v20: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v19)
 End:
-  Goto(blk11, {v21 -> v5})
+  Goto(blk11, {v20 -> v5})
 
 blk6:
 Statements:
-  (v22: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
-  (v23: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v22)
+  (v21: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
+  (v22: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v21)
 End:
-  Goto(blk11, {v23 -> v5})
+  Goto(blk11, {v22 -> v5})
 
 blk7:
 Statements:
-  (v24: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v25: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v24)
-  (v26: core::internal::bounded_int::BoundedInt::<0, 128>, v27: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v25, v9)
-  (v28: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v29: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v26, v28)
-  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v29)
-  (v31: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v32: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v27, v31)
-  (v33: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v32)
-  (v34: (core::integer::i8,)) <- struct_construct(v30)
-  (v35: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v34)
+  (v23: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v24: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v23)
+  (v25: core::internal::bounded_int::BoundedInt::<0, 128>, v26: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v24, v9)
+  (v27: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v25, v23)
+  (v28: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v27)
+  (v29: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v26, v23)
+  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v29)
+  (v31: (core::integer::i8,)) <- struct_construct(v28)
+  (v32: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v31)
 End:
-  Goto(blk11, {v35 -> v5})
+  Goto(blk11, {v32 -> v5})
 
 blk8:
 Statements:
 End:
   Match(match core::internal::bounded_int::bounded_int_constrain::<core::zeroable::NonZero::<core::integer::i8>, 0, core::internal::bounded_int::NonZeroConstrainHelper::<core::integer::i8, 0, core::internal::bounded_int::constrain0::Impl::<core::integer::i8, -128, 127>>>(v2) {
-    Result::Ok(v36) => blk9,
-    Result::Err(v37) => blk10,
+    Result::Ok(v33) => blk9,
+    Result::Err(v34) => blk10,
   })
 
 blk9:
 Statements:
-  (v38: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
-  (v39: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v36, v38)
-  (v40: core::internal::bounded_int::BoundedInt::<0, 127>, v41: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v39)
-  (v42: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v43: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v40, v42)
-  (v44: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v43)
-  (v45: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v41)
-  (v46: (core::integer::i8,)) <- struct_construct(v44)
-  (v47: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v46)
+  (v35: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
+  (v36: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v33, v35)
+  (v37: core::internal::bounded_int::BoundedInt::<0, 127>, v38: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v36)
+  (v39: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v40: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v37, v39)
+  (v41: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v40)
+  (v42: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v38)
+  (v43: (core::integer::i8,)) <- struct_construct(v41)
+  (v44: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v43)
 End:
-  Goto(blk11, {v47 -> v5})
+  Goto(blk11, {v44 -> v5})
 
 blk10:
 Statements:
-  (v48: core::internal::bounded_int::BoundedInt::<0, 127>, v49: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v7, v37)
-  (v50: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v48)
-  (v51: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 126>, core::integer::i8>(v49)
-  (v52: (core::integer::i8,)) <- struct_construct(v50)
-  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v52)
+  (v45: core::internal::bounded_int::BoundedInt::<0, 127>, v46: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v7, v34)
+  (v47: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v45)
+  (v48: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 126>, core::integer::i8>(v46)
+  (v49: (core::integer::i8,)) <- struct_construct(v47)
+  (v50: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v49)
 End:
-  Goto(blk11, {v53 -> v5})
+  Goto(blk11, {v50 -> v5})
 
 blk11:
 Statements:
 End:
   Match(match_enum(v5) {
-    PanicResult::Ok(v54) => blk12,
-    PanicResult::Err(v55) => blk13,
+    PanicResult::Ok(v51) => blk12,
+    PanicResult::Err(v52) => blk13,
   })
 
 blk12:
 Statements:
-  (v56: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v54)
+  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v51)
 End:
-  Return(v56)
+  Return(v53)
 
 blk13:
 Statements:
-  (v57: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v55)
+  (v54: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v52)
 End:
-  Return(v57)
+  Return(v54)
 
 //! > after
 Parameters: v0: core::integer::i8
@@ -3072,88 +3240,85 @@ End:
 
 blk5:
 Statements:
-  (v17: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v18: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v17)
-  (v19: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v18)
-  (v20: (core::integer::i8,)) <- struct_construct(v16)
-  (v21: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v20)
+  (v17: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v10)
+  (v18: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v17)
+  (v19: (core::integer::i8,)) <- struct_construct(v16)
+  (v20: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v19)
 End:
-  Goto(blk11, {v21 -> v5})
+  Goto(blk11, {v20 -> v5})
 
 blk6:
 Statements:
-  (v22: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
-  (v23: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v22)
+  (v21: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
+  (v22: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v21)
 End:
-  Goto(blk11, {v23 -> v5})
+  Goto(blk11, {v22 -> v5})
 
 blk7:
 Statements:
-  (v24: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v25: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v24)
-  (v26: core::internal::bounded_int::BoundedInt::<0, 128>, v27: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v25, v9)
-  (v28: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v29: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v26, v28)
-  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v29)
-  (v31: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v32: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v27, v31)
-  (v33: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v32)
-  (v34: (core::integer::i8,)) <- struct_construct(v30)
-  (v35: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v34)
+  (v23: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v24: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v23)
+  (v25: core::internal::bounded_int::BoundedInt::<0, 128>, v26: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v24, v9)
+  (v27: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v25, v23)
+  (v28: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v27)
+  (v29: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v26, v23)
+  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v29)
+  (v31: (core::integer::i8,)) <- struct_construct(v28)
+  (v32: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v31)
 End:
-  Goto(blk11, {v35 -> v5})
+  Goto(blk11, {v32 -> v5})
 
 blk8:
 Statements:
 End:
   Match(match core::internal::bounded_int::bounded_int_constrain::<core::zeroable::NonZero::<core::integer::i8>, 0, core::internal::bounded_int::NonZeroConstrainHelper::<core::integer::i8, 0, core::internal::bounded_int::constrain0::Impl::<core::integer::i8, -128, 127>>>(v2) {
-    Result::Ok(v36) => blk9,
-    Result::Err(v37) => blk10,
+    Result::Ok(v33) => blk9,
+    Result::Err(v34) => blk10,
   })
 
 blk9:
 Statements:
-  (v38: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
-  (v39: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v36, v38)
-  (v40: core::internal::bounded_int::BoundedInt::<0, 127>, v41: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v39)
-  (v42: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v43: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v40, v42)
-  (v44: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v43)
-  (v45: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v41)
-  (v46: (core::integer::i8,)) <- struct_construct(v44)
-  (v47: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v46)
+  (v35: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
+  (v36: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v33, v35)
+  (v37: core::internal::bounded_int::BoundedInt::<0, 127>, v38: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v36)
+  (v39: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v40: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v37, v39)
+  (v41: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v40)
+  (v42: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v38)
+  (v43: (core::integer::i8,)) <- struct_construct(v41)
+  (v44: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v43)
 End:
-  Goto(blk11, {v47 -> v5})
+  Goto(blk11, {v44 -> v5})
 
 blk10:
 Statements:
-  (v48: core::internal::bounded_int::BoundedInt::<0, 127>, v49: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v7, v37)
-  (v50: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v48)
-  (v51: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 126>, core::integer::i8>(v49)
-  (v52: (core::integer::i8,)) <- struct_construct(v50)
-  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v52)
+  (v45: core::internal::bounded_int::BoundedInt::<0, 127>, v46: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v7, v34)
+  (v47: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v45)
+  (v48: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 126>, core::integer::i8>(v46)
+  (v49: (core::integer::i8,)) <- struct_construct(v47)
+  (v50: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v49)
 End:
-  Goto(blk11, {v53 -> v5})
+  Goto(blk11, {v50 -> v5})
 
 blk11:
 Statements:
 End:
   Match(match_enum(v5) {
-    PanicResult::Ok(v54) => blk12,
-    PanicResult::Err(v55) => blk13,
+    PanicResult::Ok(v51) => blk12,
+    PanicResult::Err(v52) => blk13,
   })
 
 blk12:
 Statements:
-  (v56: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v54)
+  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v51)
 End:
-  Return(v56)
+  Return(v53)
 
 blk13:
 Statements:
-  (v57: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v55)
+  (v54: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v52)
 End:
-  Return(v57)
+  Return(v54)
 
 //! > lowering_diagnostics
 
@@ -3226,88 +3391,85 @@ End:
 
 blk5:
 Statements:
-  (v17: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v18: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v17)
-  (v19: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v18)
-  (v20: (core::integer::i8,)) <- struct_construct(v16)
-  (v21: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v20)
+  (v17: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v10)
+  (v18: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v17)
+  (v19: (core::integer::i8,)) <- struct_construct(v16)
+  (v20: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v19)
 End:
-  Goto(blk11, {v21 -> v5})
+  Goto(blk11, {v20 -> v5})
 
 blk6:
 Statements:
-  (v22: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
-  (v23: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v22)
+  (v21: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
+  (v22: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v21)
 End:
-  Goto(blk11, {v23 -> v5})
+  Goto(blk11, {v22 -> v5})
 
 blk7:
 Statements:
-  (v24: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v25: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v24)
-  (v26: core::internal::bounded_int::BoundedInt::<0, 128>, v27: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v25, v9)
-  (v28: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v29: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v26, v28)
-  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v29)
-  (v31: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v32: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v27, v31)
-  (v33: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v32)
-  (v34: (core::integer::i8,)) <- struct_construct(v30)
-  (v35: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v34)
+  (v23: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v24: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v23)
+  (v25: core::internal::bounded_int::BoundedInt::<0, 128>, v26: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v24, v9)
+  (v27: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v25, v23)
+  (v28: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v27)
+  (v29: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v26, v23)
+  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v29)
+  (v31: (core::integer::i8,)) <- struct_construct(v28)
+  (v32: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v31)
 End:
-  Goto(blk11, {v35 -> v5})
+  Goto(blk11, {v32 -> v5})
 
 blk8:
 Statements:
 End:
   Match(match core::internal::bounded_int::bounded_int_constrain::<core::zeroable::NonZero::<core::integer::i8>, 0, core::internal::bounded_int::NonZeroConstrainHelper::<core::integer::i8, 0, core::internal::bounded_int::constrain0::Impl::<core::integer::i8, -128, 127>>>(v2) {
-    Result::Ok(v36) => blk9,
-    Result::Err(v37) => blk10,
+    Result::Ok(v33) => blk9,
+    Result::Err(v34) => blk10,
   })
 
 blk9:
 Statements:
-  (v38: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
-  (v39: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v36, v38)
-  (v40: core::internal::bounded_int::BoundedInt::<0, 127>, v41: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v39)
-  (v42: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v43: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v40, v42)
-  (v44: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v43)
-  (v45: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v41)
-  (v46: (core::integer::i8,)) <- struct_construct(v44)
-  (v47: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v46)
+  (v35: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
+  (v36: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v33, v35)
+  (v37: core::internal::bounded_int::BoundedInt::<0, 127>, v38: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v36)
+  (v39: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v40: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v37, v39)
+  (v41: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v40)
+  (v42: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v38)
+  (v43: (core::integer::i8,)) <- struct_construct(v41)
+  (v44: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v43)
 End:
-  Goto(blk11, {v47 -> v5})
+  Goto(blk11, {v44 -> v5})
 
 blk10:
 Statements:
-  (v48: core::internal::bounded_int::BoundedInt::<0, 127>, v49: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v7, v37)
-  (v50: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v48)
-  (v51: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 126>, core::integer::i8>(v49)
-  (v52: (core::integer::i8,)) <- struct_construct(v50)
-  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v52)
+  (v45: core::internal::bounded_int::BoundedInt::<0, 127>, v46: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v7, v34)
+  (v47: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v45)
+  (v48: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 126>, core::integer::i8>(v46)
+  (v49: (core::integer::i8,)) <- struct_construct(v47)
+  (v50: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v49)
 End:
-  Goto(blk11, {v53 -> v5})
+  Goto(blk11, {v50 -> v5})
 
 blk11:
 Statements:
 End:
   Match(match_enum(v5) {
-    PanicResult::Ok(v54) => blk12,
-    PanicResult::Err(v55) => blk13,
+    PanicResult::Ok(v51) => blk12,
+    PanicResult::Err(v52) => blk13,
   })
 
 blk12:
 Statements:
-  (v56: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v54)
+  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v51)
 End:
-  Return(v56)
+  Return(v53)
 
 blk13:
 Statements:
-  (v57: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v55)
+  (v54: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v52)
 End:
-  Return(v57)
+  Return(v54)
 
 //! > after
 Parameters:
@@ -3355,87 +3517,84 @@ End:
 
 blk5:
 Statements:
-  (v17: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v18: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v17)
-  (v19: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v18)
-  (v20: (core::integer::i8,)) <- struct_construct(v16)
-  (v21: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v20)
+  (v17: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v15, v10)
+  (v18: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v17)
+  (v19: (core::integer::i8,)) <- struct_construct(v16)
+  (v20: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v19)
 End:
-  Goto(blk11, {v21 -> v5})
+  Goto(blk11, {v20 -> v5})
 
 blk6:
 Statements:
-  (v22: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
-  (v23: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v22)
+  (v21: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<172187905895106538554965390496552885916079950910267434855917956435901443959>()
+  (v22: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v21)
 End:
-  Goto(blk11, {v23 -> v5})
+  Goto(blk11, {v22 -> v5})
 
 blk7:
 Statements:
-  (v24: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v25: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v24)
-  (v26: core::internal::bounded_int::BoundedInt::<0, 128>, v27: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v25, v9)
-  (v28: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v29: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v26, v28)
-  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v29)
-  (v31: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v32: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v27, v31)
-  (v33: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v32)
-  (v34: (core::integer::i8,)) <- struct_construct(v30)
-  (v35: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v34)
+  (v23: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v24: core::internal::bounded_int::BoundedInt::<1, 128>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>(v6, v23)
+  (v25: core::internal::bounded_int::BoundedInt::<0, 128>, v26: core::internal::bounded_int::BoundedInt::<0, 126>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<0, 126>>>(v24, v9)
+  (v27: core::internal::bounded_int::BoundedInt::<-128, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 128>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 128, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<128, -128>>>(v25, v23)
+  (v28: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-128, 0>, core::integer::i8>(v27)
+  (v29: core::internal::bounded_int::BoundedInt::<-126, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 126>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 126, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<126, -126>>>(v26, v23)
+  (v30: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-126, 0>, core::integer::i8>(v29)
+  (v31: (core::integer::i8,)) <- struct_construct(v28)
+  (v32: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v31)
 End:
-  Goto(blk11, {v35 -> v5})
+  Goto(blk11, {v32 -> v5})
 
 blk8:
 Statements:
-  (v37: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<0, 127>>) <- NonZero(4)
+  (v34: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<0, 127>>) <- NonZero(4)
 End:
   Goto(blk10, {})
 
 blk9:
 Statements:
-  (v38: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
-  (v39: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v36, v38)
-  (v40: core::internal::bounded_int::BoundedInt::<0, 127>, v41: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v39)
-  (v42: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
-  (v43: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v40, v42)
-  (v44: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v43)
-  (v45: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v41)
-  (v46: (core::integer::i8,)) <- struct_construct(v44)
-  (v47: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v46)
+  (v35: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>) <- NonZero(-1)
+  (v36: core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<1, 128>>) <- core::internal::bounded_int::bounded_int_mul::<core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-128, -1>>, core::zeroable::NonZero::<core::internal::bounded_int::BoundedInt::<-1, -1>>, core::internal::bounded_int::NonZeroMulHelper::<core::internal::bounded_int::BoundedInt::<-128, -1>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<-128, -1, core::internal::bounded_int::neg_felt252::Impl::<-128, 128>, core::internal::bounded_int::neg_felt252::Impl::<-1, 1>>>>(v33, v35)
+  (v37: core::internal::bounded_int::BoundedInt::<0, 127>, v38: core::internal::bounded_int::BoundedInt::<0, 127>) <- core::internal::bounded_int::bounded_int_div_rem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::integer::signed_div_rem::impls::DivRem::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<1, 128>, core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<0, 127>>>(v7, v36)
+  (v39: core::internal::bounded_int::BoundedInt::<-1, -1>) <- -1
+  (v40: core::internal::bounded_int::BoundedInt::<-127, 0>) <- core::internal::bounded_int::bounded_int_mul::<core::internal::bounded_int::BoundedInt::<0, 127>, core::internal::bounded_int::BoundedInt::<-1, -1>, core::internal::bounded_int::MulMinus1::<0, 127, core::internal::bounded_int::neg_felt252::Impl::<0, 0>, core::internal::bounded_int::neg_felt252::Impl::<127, -127>>>(v37, v39)
+  (v41: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<-127, 0>, core::integer::i8>(v40)
+  (v42: core::integer::i8) <- core::internal::bounded_int::upcast::<core::internal::bounded_int::BoundedInt::<0, 127>, core::integer::i8>(v38)
+  (v43: (core::integer::i8,)) <- struct_construct(v41)
+  (v44: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v43)
 End:
-  Goto(blk11, {v47 -> v5})
+  Goto(blk11, {v44 -> v5})
 
 blk10:
 Statements:
-  (v49: core::internal::bounded_int::BoundedInt::<0, 126>) <- 0
-  (v48: core::internal::bounded_int::BoundedInt::<0, 127>) <- 2
-  (v50: core::integer::i8) <- 2
-  (v51: core::integer::i8) <- 0
-  (v52: (core::integer::i8,)) <- struct_construct(v50)
-  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v52)
+  (v46: core::internal::bounded_int::BoundedInt::<0, 126>) <- 0
+  (v45: core::internal::bounded_int::BoundedInt::<0, 127>) <- 2
+  (v47: core::integer::i8) <- 2
+  (v48: core::integer::i8) <- 0
+  (v49: (core::integer::i8,)) <- struct_construct(v47)
+  (v50: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v49)
 End:
-  Goto(blk11, {v53 -> v5})
+  Goto(blk11, {v50 -> v5})
 
 blk11:
 Statements:
 End:
   Match(match_enum(v5) {
-    PanicResult::Ok(v54) => blk12,
-    PanicResult::Err(v55) => blk13,
+    PanicResult::Ok(v51) => blk12,
+    PanicResult::Err(v52) => blk13,
   })
 
 blk12:
 Statements:
-  (v56: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v54)
+  (v53: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Ok(v51)
 End:
-  Return(v56)
+  Return(v53)
 
 blk13:
 Statements:
-  (v57: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v55)
+  (v54: core::panics::PanicResult::<(core::integer::i8,)>) <- PanicResult::Err(v52)
 End:
-  Return(v57)
+  Return(v54)
 
 //! > lowering_diagnostics
 
@@ -5475,6 +5634,181 @@ End:
 
 //! > ==========================================================================
 
+//! > Array get at known index of known size array - in range.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo(v: u8) -> Option<Box<@u8>> {
+    array![v, v, v].get(1)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters: v0: core::integer::u8
+blk0 (root):
+Statements:
+  (v1: core::array::Array::<core::integer::u8>) <- core::array::array_new::<core::integer::u8>()
+  (v2: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v1, v0)
+  (v3: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v2, v0)
+  (v4: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v3, v0)
+  (v5: core::array::Array::<core::integer::u8>, v6: @core::array::Array::<core::integer::u8>) <- snapshot(v4)
+  (v7: core::integer::u32) <- 1
+End:
+  Match(match core::array::array_get::<core::integer::u8>(v6, v7) {
+    Option::Some(v8) => blk1,
+    Option::None => blk2,
+  })
+
+blk1:
+Statements:
+  (v9: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::Some(v8)
+End:
+  Goto(blk3, {v9 -> v10})
+
+blk2:
+Statements:
+  (v11: ()) <- struct_construct()
+  (v12: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::None(v11)
+End:
+  Goto(blk3, {v12 -> v10})
+
+blk3:
+Statements:
+End:
+  Return(v10)
+
+//! > after
+Parameters: v0: core::integer::u8
+blk0 (root):
+Statements:
+  (v1: core::array::Array::<core::integer::u8>) <- core::array::array_new::<core::integer::u8>()
+  (v2: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v1, v0)
+  (v3: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v2, v0)
+  (v4: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v3, v0)
+  (v5: core::array::Array::<core::integer::u8>, v6: @core::array::Array::<core::integer::u8>) <- snapshot(v4)
+  (v7: core::integer::u32) <- 1
+End:
+  Match(match core::array::array_get::<core::integer::u8>(v6, v7) {
+    Option::Some(v8) => blk1,
+    Option::None => blk2,
+  })
+
+blk1:
+Statements:
+  (v9: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::Some(v8)
+End:
+  Goto(blk3, {v9 -> v10})
+
+blk2:
+Statements:
+  (v11: ()) <- struct_construct()
+  (v12: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::None(v11)
+End:
+  Goto(blk3, {v12 -> v10})
+
+blk3:
+Statements:
+End:
+  Return(v10)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Array get at known index of known size array - out of range.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo(v: u8) -> Option<Box<@u8>> {
+    array![v, v, v].get(5)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters: v0: core::integer::u8
+blk0 (root):
+Statements:
+  (v1: core::array::Array::<core::integer::u8>) <- core::array::array_new::<core::integer::u8>()
+  (v2: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v1, v0)
+  (v3: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v2, v0)
+  (v4: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v3, v0)
+  (v5: core::array::Array::<core::integer::u8>, v6: @core::array::Array::<core::integer::u8>) <- snapshot(v4)
+  (v7: core::integer::u32) <- 5
+End:
+  Match(match core::array::array_get::<core::integer::u8>(v6, v7) {
+    Option::Some(v8) => blk1,
+    Option::None => blk2,
+  })
+
+blk1:
+Statements:
+  (v9: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::Some(v8)
+End:
+  Goto(blk3, {v9 -> v10})
+
+blk2:
+Statements:
+  (v11: ()) <- struct_construct()
+  (v12: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::None(v11)
+End:
+  Goto(blk3, {v12 -> v10})
+
+blk3:
+Statements:
+End:
+  Return(v10)
+
+//! > after
+Parameters: v0: core::integer::u8
+blk0 (root):
+Statements:
+  (v1: core::array::Array::<core::integer::u8>) <- core::array::array_new::<core::integer::u8>()
+  (v2: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v1, v0)
+  (v3: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v2, v0)
+  (v4: core::array::Array::<core::integer::u8>) <- core::array::array_append::<core::integer::u8>(v3, v0)
+  (v5: core::array::Array::<core::integer::u8>, v6: @core::array::Array::<core::integer::u8>) <- snapshot(v4)
+  (v7: core::integer::u32) <- 5
+End:
+  Goto(blk2, {})
+
+blk1:
+Statements:
+  (v9: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::Some(v8)
+End:
+  Goto(blk3, {v9 -> v10})
+
+blk2:
+Statements:
+  (v11: ()) <- struct_construct()
+  (v12: core::option::Option::<core::box::Box::<@core::integer::u8>>) <- Option::None(v11)
+End:
+  Goto(blk3, {v12 -> v10})
+
+blk3:
+Statements:
+End:
+  Return(v10)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
 //! > Array len of known array.
 
 //! > test_runner_name
@@ -5574,7 +5908,7 @@ blk0 (root):
 Statements:
   (v0: core::array::Array::<core::felt252>) <- core::array::array_new::<core::felt252>()
 End:
-  Goto(blk2, {})
+  Goto(blk2, {v0 -> v3})
 
 blk1:
 Statements:
@@ -5741,7 +6075,7 @@ Statements:
   (v0: core::array::Array::<core::felt252>) <- core::array::array_new::<core::felt252>()
   (v1: core::array::Array::<core::felt252>, v2: @core::array::Array::<core::felt252>) <- snapshot(v0)
 End:
-  Goto(blk2, {})
+  Goto(blk2, {v2 -> v5})
 
 blk1:
 Statements:
@@ -5822,7 +6156,7 @@ Statements:
   (v0: core::array::Array::<core::felt252>) <- core::array::array_new::<core::felt252>()
   (v1: core::array::Array::<core::felt252>, v2: @core::array::Array::<core::felt252>) <- snapshot(v0)
 End:
-  Goto(blk2, {})
+  Goto(blk2, {v2 -> v5})
 
 blk1:
 Statements:
@@ -5870,7 +6204,7 @@ blk0 (root):
 Statements:
   (v0: core::array::Array::<core::bytes_31::bytes31>) <- core::array::array_new::<core::bytes_31::bytes31>()
   (v1: core::felt252) <- 126207244316550804821666916
-  (v2: core::integer::u32) <- 11
+  (v2: core::internal::bounded_int::BoundedInt::<0, 30>) <- 11
   (v3: core::byte_array::ByteArray) <- struct_construct(v0, v1, v2)
   (v4: core::byte_array::ByteArray, v5: @core::byte_array::ByteArray) <- snapshot(v3)
   (v6: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panics::panic_with_byte_array(v5)
@@ -5894,12 +6228,392 @@ Statements:
   (v17: core::panics::Panic) <- struct_construct()
   (v0: core::array::Array::<core::bytes_31::bytes31>) <- core::array::array_new::<core::bytes_31::bytes31>()
   (v1: core::felt252) <- 126207244316550804821666916
-  (v2: core::integer::u32) <- 11
+  (v2: core::internal::bounded_int::BoundedInt::<0, 30>) <- 11
   (v3: core::byte_array::ByteArray) <- struct_construct(v0, v1, v2)
   (v4: core::byte_array::ByteArray, v5: @core::byte_array::ByteArray) <- snapshot(v3)
   (v6: (core::panics::Panic, core::array::Array::<core::felt252>)) <- struct_construct(v17, v16)
   (v7: core::panics::PanicResult::<((),)>) <- PanicResult::Err(v6)
 End:
   Return(v7)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Match enum on snapshot of enum.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    let v = @Some(1);
+    match v {
+        Some(v) => *v,
+        None => 0,
+    }
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::option::Option::<core::felt252>) <- Option::Some(v0)
+  (v2: core::option::Option::<core::felt252>, v3: @core::option::Option::<core::felt252>) <- snapshot(v1)
+End:
+  Match(match_enum(v3) {
+    Option::Some(v4) => blk1,
+    Option::None(v5) => blk2,
+  })
+
+blk1:
+Statements:
+  (v6: core::felt252) <- desnap(v4)
+End:
+  Goto(blk3, {v6 -> v7})
+
+blk2:
+Statements:
+  (v8: core::felt252) <- 0
+End:
+  Goto(blk3, {v8 -> v7})
+
+blk3:
+Statements:
+End:
+  Return(v7)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::option::Option::<core::felt252>) <- Option::Some(v0)
+  (v2: core::option::Option::<core::felt252>, v3: @core::option::Option::<core::felt252>) <- snapshot(v1)
+  (v10: core::felt252) <- 1
+  (v9: core::felt252, v4: @core::felt252) <- snapshot(v10)
+End:
+  Goto(blk1, {})
+
+blk1:
+Statements:
+  (v6: core::felt252) <- desnap(v4)
+End:
+  Goto(blk3, {v6 -> v7})
+
+blk2:
+Statements:
+  (v8: core::felt252) <- 0
+End:
+  Goto(blk3, {v8 -> v7})
+
+blk3:
+Statements:
+End:
+  Return(v7)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 add const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    1 + 2
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- core::felt252_add(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- 3
+End:
+  Return(v2)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 sub const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    5 - 3
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 5
+  (v1: core::felt252) <- 3
+  (v2: core::felt252) <- core::felt252_sub(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 5
+  (v1: core::felt252) <- 3
+  (v2: core::felt252) <- 2
+End:
+  Return(v2)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 mul const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    2 * 3
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 2
+  (v1: core::felt252) <- 3
+  (v2: core::felt252) <- core::felt252_mul(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 2
+  (v1: core::felt252) <- 3
+  (v2: core::felt252) <- 6
+End:
+  Return(v2)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 combined operations const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    1 + 2 * 3 - 4
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- 3
+  (v3: core::felt252) <- core::felt252_mul(v1, v2)
+  (v4: core::felt252) <- core::felt252_add(v0, v3)
+  (v5: core::felt252) <- 4
+  (v6: core::felt252) <- core::felt252_sub(v4, v5)
+End:
+  Return(v6)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 1
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- 3
+  (v3: core::felt252) <- 6
+  (v4: core::felt252) <- 7
+  (v5: core::felt252) <- 4
+  (v6: core::felt252) <- 3
+End:
+  Return(v6)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 div const fold.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo() -> felt252 {
+    let x = core::felt252_div(6, 30);
+    x * 5
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 6
+  (v1: core::zeroable::NonZero::<core::felt252>) <- NonZero(30)
+  (v2: core::felt252) <- core::felt252_div(v0, v1)
+  (v3: core::felt252) <- 5
+  (v4: core::felt252) <- core::felt252_mul(v2, v3)
+End:
+  Return(v4)
+
+//! > after
+Parameters:
+blk0 (root):
+Statements:
+  (v0: core::felt252) <- 6
+  (v1: core::zeroable::NonZero::<core::felt252>) <- NonZero(30)
+  (v2: core::felt252) <- 2894802230932904970957858226476056084498485772265277359978473644908697616385
+  (v3: core::felt252) <- 5
+  (v4: core::felt252) <- 1
+End:
+  Return(v4)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 div by one.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo(a: felt252) -> felt252 {
+    core::felt252_div(a, 1)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters: v0: core::felt252
+blk0 (root):
+Statements:
+  (v1: core::zeroable::NonZero::<core::felt252>) <- NonZero(1)
+  (v2: core::felt252) <- core::felt252_div(v0, v1)
+End:
+  Return(v2)
+
+//! > after
+Parameters: v0: core::felt252
+blk0 (root):
+Statements:
+  (v1: core::zeroable::NonZero::<core::felt252>) <- NonZero(1)
+  (v2: core::felt252) <- core::felt252_div(v0, v1)
+End:
+  Return(v0)
+
+//! > lowering_diagnostics
+
+//! > ==========================================================================
+
+//! > Felt252 zero div.
+
+//! > test_runner_name
+test_match_optimizer
+
+//! > function
+fn foo(a: NonZero<felt252>) -> felt252 {
+    core::felt252_div(0, a)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > before
+Parameters: v0: core::zeroable::NonZero::<core::felt252>
+blk0 (root):
+Statements:
+  (v1: core::felt252) <- 0
+  (v2: core::felt252) <- core::felt252_div(v1, v0)
+End:
+  Return(v2)
+
+//! > after
+Parameters: v0: core::zeroable::NonZero::<core::felt252>
+blk0 (root):
+Statements:
+  (v1: core::felt252) <- 0
+  (v2: core::felt252) <- 0
+End:
+  Return(v2)
 
 //! > lowering_diagnostics

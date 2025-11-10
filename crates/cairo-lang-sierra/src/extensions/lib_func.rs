@@ -38,7 +38,9 @@ pub trait SignatureSpecializationContext: TypeSpecializationContext {
     }
 
     /// Returns the ap-change of the given function.
-    fn try_get_function_ap_change(&self, function_id: &FunctionId) -> Option<SierraApChange>;
+    fn try_get_function_ap_change(&self, function_id: &FunctionId) -> Option<SierraApChange> {
+        Some(SierraApChange::FunctionCall(function_id.clone()))
+    }
 
     /// Wraps [Self::try_get_function_ap_change] with a result object.
     fn get_function_ap_change(
@@ -293,7 +295,7 @@ impl<T: NoGenericArgsGenericLibfunc> SignatureOnlyGenericLibfunc for T {
 }
 
 /// Information regarding a parameter of the libfunc.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ParamSignature {
     /// The type of the parameter.
     pub ty: ConcreteTypeId,
@@ -347,7 +349,7 @@ impl From<ConcreteTypeId> for ParamSignature {
 ///
 /// For example, whether the reference is equal to one of the parameters (as in the dup() function),
 /// or whether it's newly allocated local variable.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputVarReferenceInfo {
     /// The output value is exactly the same as one of the parameters.
     SameAsParam { param_idx: usize },
@@ -371,7 +373,7 @@ pub enum OutputVarReferenceInfo {
     Deferred(DeferredOutputKind),
     /// All the output cells are of the form `[ap/fp + const]`. For example, `([ap + 1], [fp])`.
     SimpleDerefs,
-    /// The output is a of size 0.
+    /// The output is of size 0.
     ZeroSized,
 }
 
@@ -388,7 +390,7 @@ pub enum DeferredOutputKind {
 }
 
 /// Contains information regarding an output variable in a single branch.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct OutputVarInfo {
     pub ty: ConcreteTypeId,
     pub ref_info: OutputVarReferenceInfo,
@@ -407,7 +409,7 @@ impl OutputVarInfo {
 /// for all the output variables in an output branch.
 ///
 /// See [OutputVarInfo].
-#[derive(Debug)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct BranchSignature {
     /// Information about the new variables created in the branch.
     pub vars: Vec<OutputVarInfo>,
@@ -430,6 +432,8 @@ pub enum SierraApChange {
     /// The lib func is `branch_align`.
     /// The `ap` change is known during compilation.
     BranchAlign,
+    /// This is a function call, and the ap change should be fetched elsewhere.
+    FunctionCall(FunctionId),
 }
 /// Trait for a specialized library function.
 pub trait ConcreteLibfunc {
@@ -453,6 +457,7 @@ pub trait ConcreteLibfunc {
 }
 
 /// Represents the signature of a library function.
+#[derive(Clone, PartialEq, Eq)]
 pub struct LibfuncSignature {
     /// The parameter types and other information for the parameters for calling a library
     /// function.

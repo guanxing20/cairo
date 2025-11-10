@@ -1,6 +1,6 @@
 use cairo_lang_sierra::ids::ConcreteLibfuncId;
+use cairo_lang_test_utils::test;
 use pretty_assertions::assert_eq;
-use test_log::test;
 
 use super::resolve_labels_and_extract_locations;
 use crate::pre_sierra;
@@ -21,7 +21,7 @@ fn test_resolve_labels() {
             .into_statement_without_location()
     };
 
-    let statements: Vec<pre_sierra::StatementWithLocation> = vec![
+    let statements: Vec<pre_sierra::StatementWithLocation<'_>> = vec![
         label(7),
         label(5),
         simple_statement(ConcreteLibfuncId::from_string("Instruction0"), &[], &[]),

@@ -2,6 +2,7 @@ use std::any::Any;
 use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::ops::{Shl, Sub};
+use std::rc::Rc;
 use std::vec::IntoIter;
 
 use ark_ff::{BigInteger, PrimeField};
@@ -54,7 +55,7 @@ mod circuit;
 mod contract_address;
 mod dict_manager;
 
-/// Convert a Hint to the cairo-vm class HintParams by canonically serializing it to a string.
+/// Converts a hint to the Cairo VM class `HintParams` by canonically serializing it to a string.
 pub fn hint_to_hint_params(hint: &Hint) -> HintParams {
     HintParams {
         code: hint.representing_string(),
@@ -93,7 +94,7 @@ pub struct CairoHintProcessor<'a> {
     pub user_args: Vec<Vec<Arg>>,
     /// A mapping from a string that represents a hint to the hint object.
     pub string_to_hint: HashMap<String, Hint>,
-    /// The starknet state.
+    /// The Starknet state.
     pub starknet_state: StarknetState,
     /// Maintains the resources of the run.
     pub run_resources: RunResources,
@@ -116,7 +117,7 @@ pub fn cell_ref_to_relocatable(cell_ref: &CellRef, vm: &VirtualMachine) -> Reloc
     (base + (cell_ref.offset as i32)).unwrap()
 }
 
-/// Inserts a value into the vm memory cell represented by the cellref.
+/// Inserts a value into the VM memory cell represented by the cell reference.
 #[macro_export]
 macro_rules! insert_value_to_cellref {
     ($vm:ident, $cell_ref:ident, $value:expr) => {
@@ -130,8 +131,8 @@ type Log = (Vec<Felt252>, Vec<Felt252>);
 // L2 to L1 message type signature
 type L2ToL1Message = (Felt252, Vec<Felt252>);
 
-/// Execution scope for starknet related data.
-/// All values will be 0 and by default if not setup by the test.
+/// Execution scope for Starknet-related data.
+/// All values will be 0 by default if not set up by the test.
 #[derive(Clone, Default)]
 pub struct StarknetState {
     /// The values of addresses in the simulated storage per contract.
@@ -177,7 +178,7 @@ struct ContractLogs {
     l2_to_l1_messages: VecDeque<L2ToL1Message>,
 }
 
-/// Copy of the cairo `ExecutionInfo` struct.
+/// Copy of the Cairo `ExecutionInfo` struct.
 #[derive(Clone, Default)]
 struct ExecutionInfo {
     block_info: BlockInfo,
@@ -187,7 +188,7 @@ struct ExecutionInfo {
     entry_point_selector: Felt252,
 }
 
-/// Copy of the cairo `BlockInfo` struct.
+/// Copy of the Cairo `BlockInfo` struct.
 #[derive(Clone, Default)]
 struct BlockInfo {
     block_number: Felt252,
@@ -195,7 +196,7 @@ struct BlockInfo {
     sequencer_address: Felt252,
 }
 
-/// Copy of the cairo `TxInfo` struct.
+/// Copy of the Cairo `TxInfo` struct.
 #[derive(Clone, Default)]
 struct TxInfo {
     version: Felt252,
@@ -213,7 +214,7 @@ struct TxInfo {
     account_deployment_data: Vec<Felt252>,
 }
 
-/// Copy of the cairo `ResourceBounds` struct.
+/// Copy of the Cairo `ResourceBounds` struct.
 #[derive(Clone, Default)]
 struct ResourceBounds {
     resource: Felt252,
@@ -227,12 +228,12 @@ struct MemoryExecScope {
     next_address: Relocatable,
 }
 
-/// Fetches the value of a cell from the vm.
+/// Fetches the value of a cell from the VM.
 fn get_cell_val(vm: &VirtualMachine, cell: &CellRef) -> Result<Felt252, VirtualMachineError> {
     Ok(*vm.get_integer(cell_ref_to_relocatable(cell, vm))?)
 }
 
-/// Fetch the `MaybeRelocatable` value from an address.
+/// Fetches the `MaybeRelocatable` value from an address.
 fn get_maybe_from_addr(
     vm: &VirtualMachine,
     addr: Relocatable,
@@ -241,7 +242,7 @@ fn get_maybe_from_addr(
         .ok_or_else(|| VirtualMachineError::InvalidMemoryValueTemporaryAddress(Box::new(addr)))
 }
 
-/// Fetches the maybe relocatable value of a cell from the vm.
+/// Fetches the maybe-relocatable value of a cell from the VM.
 fn get_cell_maybe(
     vm: &VirtualMachine,
     cell: &CellRef,
@@ -249,7 +250,7 @@ fn get_cell_maybe(
     get_maybe_from_addr(vm, cell_ref_to_relocatable(cell, vm))
 }
 
-/// Fetches the value of a cell plus an offset from the vm, useful for pointers.
+/// Fetches the value of a cell plus an offset from the VM; useful for pointers.
 pub fn get_ptr(
     vm: &VirtualMachine,
     cell: &CellRef,
@@ -258,7 +259,7 @@ pub fn get_ptr(
     Ok((vm.get_relocatable(cell_ref_to_relocatable(cell, vm))? + offset)?)
 }
 
-/// Fetches the value of a pointer described by the value at `cell` plus an offset from the vm.
+/// Fetches the value of a pointer described by the value at `cell` plus an offset from the VM.
 fn get_double_deref_val(
     vm: &VirtualMachine,
     cell: &CellRef,
@@ -267,8 +268,8 @@ fn get_double_deref_val(
     Ok(*vm.get_integer(get_ptr(vm, cell, offset)?)?)
 }
 
-/// Fetches the maybe relocatable value of a pointer described by the value at `cell` plus an offset
-/// from the vm.
+/// Fetches the maybe-relocatable value of a pointer described by the value at `cell` plus an offset
+/// from the VM.
 fn get_double_deref_maybe(
     vm: &VirtualMachine,
     cell: &CellRef,
@@ -277,7 +278,7 @@ fn get_double_deref_maybe(
     get_maybe_from_addr(vm, get_ptr(vm, cell, offset)?)
 }
 
-/// Extracts a parameter assumed to be a buffer, and converts it into a relocatable.
+/// Extracts a parameter assumed to be a buffer and converts it into a relocatable.
 pub fn extract_relocatable(
     vm: &VirtualMachine,
     buffer: &ResOperand,
@@ -286,7 +287,7 @@ pub fn extract_relocatable(
     get_ptr(vm, base, &offset)
 }
 
-/// Fetches the value of `res_operand` from the vm.
+/// Fetches the value of `res_operand` from the VM.
 pub fn get_val(
     vm: &VirtualMachine,
     res_operand: &ResOperand,
@@ -333,7 +334,7 @@ macro_rules! fail_syscall {
     };
 }
 
-/// Gas Costs for syscalls.
+/// Gas costs for syscalls.
 /// Mostly duplication of:
 /// `https://github.com/starkware-libs/blockifier/blob/main/crates/blockifier/src/abi/constants.rs`.
 mod gas_costs {
@@ -374,7 +375,7 @@ mod gas_costs {
     pub const STORAGE_WRITE: usize = 50 * STEP;
 }
 
-/// Deducts gas from the given gas counter, or fails the syscall if there is not enough gas.
+/// Deducts gas from the given gas counter or fails the syscall if there is not enough gas.
 macro_rules! deduct_gas {
     ($gas:ident, $amount:ident) => {
         if *$gas < gas_costs::$amount {
@@ -384,7 +385,7 @@ macro_rules! deduct_gas {
     };
 }
 
-/// Fetches the maybe relocatable value of `res_operand` from the vm.
+/// Fetches the maybe-relocatable value of `res_operand` from the VM.
 fn get_maybe(
     vm: &VirtualMachine,
     res_operand: &ResOperand,
@@ -421,7 +422,6 @@ impl HintProcessorLogic for CairoHintProcessor<'_> {
         vm: &mut VirtualMachine,
         exec_scopes: &mut ExecutionScopes,
         hint_data: &Box<dyn Any>,
-        _constants: &HashMap<String, Felt252>,
     ) -> Result<(), HintError> {
         let hint = hint_data.downcast_ref::<Hint>().ok_or(HintError::WrongHintData)?;
         let hint = match hint {
@@ -468,6 +468,7 @@ impl HintProcessorLogic for CairoHintProcessor<'_> {
         _ap_tracking_data: &ApTracking,
         _reference_ids: &HashMap<String, usize>,
         _references: &[HintReference],
+        _constants: Rc<HashMap<String, Felt252>>,
     ) -> Result<Box<dyn Any>, VirtualMachineError> {
         Ok(Box::new(self.string_to_hint[hint_code].clone()))
     }
@@ -488,6 +489,23 @@ impl ResourceTracker for CairoHintProcessor<'_> {
 
     fn run_resources(&self) -> &RunResources {
         self.run_resources.run_resources()
+    }
+}
+
+pub trait StarknetHintProcessor: HintProcessor {
+    /// Take [`StarknetState`] out of this hint processor, resetting own state.
+    fn take_starknet_state(&mut self) -> StarknetState;
+    /// Take [`StarknetExecutionResources`] out of this hint processor, resetting own state.
+    fn take_syscalls_used_resources(&mut self) -> StarknetExecutionResources;
+}
+
+impl StarknetHintProcessor for CairoHintProcessor<'_> {
+    fn take_starknet_state(&mut self) -> StarknetState {
+        std::mem::take(&mut self.starknet_state)
+    }
+
+    fn take_syscalls_used_resources(&mut self) -> StarknetExecutionResources {
+        std::mem::take(&mut self.syscalls_used_resources)
     }
 }
 
@@ -990,7 +1008,7 @@ impl CairoHintProcessor<'_> {
     ) -> Result<SyscallResult, HintError> {
         deduct_gas!(gas_counter, DEPLOY);
 
-        // Assign the starknet address of the contract.
+        // Assign the Starknet address of the contract.
         let deployer_address = if deploy_from_zero {
             Felt252::zero()
         } else {
@@ -1132,7 +1150,7 @@ impl CairoHintProcessor<'_> {
         new_class: Felt252,
     ) -> Result<SyscallResult, HintError> {
         deduct_gas!(gas_counter, REPLACE_CLASS);
-        // Validating the class hash was declared as one of the starknet contracts.
+        // Validating the class hash was declared as one of the Starknet contracts.
         if !self
             .runner
             .expect("Runner is needed for starknet.")
@@ -1438,10 +1456,9 @@ fn sha_256_process_block(
     vm: &mut dyn VMWrapper,
 ) -> Result<SyscallResult, HintError> {
     deduct_gas!(gas_counter, SHA256_PROCESS_BLOCK);
-    let data_as_bytes = sha2::digest::generic_array::GenericArray::from_exact_iter(
+    let data_as_bytes = FromIterator::from_iter(
         data.iter().flat_map(|felt| felt.to_bigint().to_u32().unwrap().to_be_bytes()),
-    )
-    .unwrap();
+    );
     let mut state_as_words: [u32; 8] = prev_state
         .iter()
         .map(|felt| felt.to_bigint().to_u32().unwrap())
@@ -1584,7 +1601,7 @@ fn get_secp256k1_exec_scope(
 
 // --- secp256r1 ---
 
-/// Executes the `secp256k1_new_syscall` syscall.
+/// Executes the `secp256r1_new_syscall` syscall.
 fn secp256r1_new(
     gas_counter: &mut usize,
     x: BigUint,
@@ -1766,8 +1783,8 @@ pub fn execute_deprecated_hint(
     Ok(())
 }
 
-/// Allocates a memory buffer of size `size` on a vm segment.
-/// Segment will be reused between calls.
+/// Allocates a memory buffer of size `size` on a VM segment.
+/// The segment will be reused between calls.
 fn alloc_memory(
     exec_scopes: &mut ExecutionScopes,
     vm: &mut VirtualMachine,
@@ -1783,6 +1800,34 @@ fn alloc_memory(
     let scope = exec_scopes.get_mut_ref::<MemoryExecScope>(NAME)?;
     let updated = (scope.next_address + size)?;
     Ok(std::mem::replace(&mut scope.next_address, updated))
+}
+
+/// Sample a random point on the elliptic curve and insert into memory.
+pub fn random_ec_point<R: rand::RngCore>(
+    vm: &mut VirtualMachine,
+    x: &CellRef,
+    y: &CellRef,
+    rng: &mut R,
+) -> Result<(), HintError> {
+    // Keep sampling a random field element `X` until `X^3 + X + beta` is a quadratic
+    // residue.
+    let (random_x, random_y) = loop {
+        // Randomizing 31 bytes to make sure is in range.
+        // TODO(orizi): Use `Felt252` random implementation when exists.
+        let x_bytes: [u8; 31] = rng.random();
+        let random_x = Felt252::from_bytes_be_slice(&x_bytes);
+        /// The Beta value of the Starkware elliptic curve.
+        pub const BETA: Felt252 = Felt252::from_hex_unchecked(
+            "0x6f21413efbe40de150e596d72f7a8c5609ad26c15c915c1f4cdfcb99cee9e89",
+        );
+        let random_y_squared = random_x * random_x * random_x + random_x + BETA;
+        if let Some(random_y) = random_y_squared.sqrt() {
+            break (random_x, random_y);
+        }
+    };
+    insert_value_to_cellref!(vm, x, random_x)?;
+    insert_value_to_cellref!(vm, y, random_y)?;
+    Ok(())
 }
 
 /// Executes a core hint.
@@ -1943,25 +1988,8 @@ pub fn execute_core_hint(
             insert_value_to_cellref!(vm, y, y_value)?;
         }
         CoreHint::RandomEcPoint { x, y } => {
-            // Keep sampling a random field element `X` until `X^3 + X + beta` is a quadratic
-            // residue.
             let mut rng = rand::rng();
-            let (random_x, random_y) = loop {
-                // Randominzing 31 bytes to make sure is in range.
-                // TODO(orizi): Use `Felt252` random implementation when exists.
-                let x_bytes: [u8; 31] = rng.random();
-                let random_x = Felt252::from_bytes_be_slice(&x_bytes);
-                /// The Beta value of the Starkware elliptic curve.
-                pub const BETA: Felt252 = Felt252::from_hex_unchecked(
-                    "0x6f21413efbe40de150e596d72f7a8c5609ad26c15c915c1f4cdfcb99cee9e89",
-                );
-                let random_y_squared = random_x * random_x * random_x + random_x + BETA;
-                if let Some(random_y) = random_y_squared.sqrt() {
-                    break (random_x, random_y);
-                }
-            };
-            insert_value_to_cellref!(vm, x, random_x)?;
-            insert_value_to_cellref!(vm, y, random_y)?;
+            random_ec_point(vm, x, y, &mut rng)?;
         }
         CoreHint::FieldSqrt { val, sqrt } => {
             let val = get_val(vm, val)?;
@@ -2267,8 +2295,8 @@ fn read_array_result_as_vec(memory: &[Option<Felt252>], value: &[Felt252]) -> Ve
     let [res_start, res_end] = value else {
         panic!("Unexpected return value from contract call");
     };
-    let res_start: usize = res_start.clone().to_bigint().try_into().unwrap();
-    let res_end: usize = res_end.clone().to_bigint().try_into().unwrap();
+    let res_start: usize = res_start.to_bigint().try_into().unwrap();
+    let res_end: usize = res_end.to_bigint().try_into().unwrap();
     (res_start..res_end).map(|i| memory[i].unwrap()).collect()
 }
 
@@ -2397,10 +2425,10 @@ fn format_for_debug(mut felts: IntoIter<Felt252>) -> String {
     while let Some(item) = format_next_item(&mut felts) {
         items.push(item);
     }
-    if let [item] = &items[..] {
-        if item.is_string {
-            return item.item.clone();
-        }
+    if let [item] = &items[..]
+        && item.is_string
+    {
+        return item.item.clone();
     }
     items
         .into_iter()
@@ -2440,10 +2468,10 @@ where
 {
     let first_felt = values.next()?;
 
-    if first_felt == Felt252::from_hex(BYTE_ARRAY_MAGIC).unwrap() {
-        if let Some(string) = try_format_string(values) {
-            return Some(FormattedItem { item: string, is_string: true });
-        }
+    if first_felt == Felt252::from_hex(BYTE_ARRAY_MAGIC).unwrap()
+        && let Some(string) = try_format_string(values)
+    {
+        return Some(FormattedItem { item: string, is_string: true });
     }
     Some(FormattedItem { item: format_short_string(&first_felt), is_string: false })
 }

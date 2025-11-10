@@ -184,7 +184,7 @@ pub trait TestFileRunner {
 /// Creates a test that reads test files for a given function.
 ///
 /// test_name - the name of the test.
-/// filenames - a vector of tests files the test applies to.
+/// filenames - a vector of test files the test applies to.
 /// runner - the struct implementing `TestFileRunner + Default`.
 ///
 /// The structure of the file must be of the following form:
@@ -229,7 +229,7 @@ macro_rules! test_file_test_with_runner {
         mod $suite {
             use super::*;
         $(
-            #[test_log::test]
+            #[cairo_lang_test_utils::test]
             fn $test_name() -> Result<(), std::io::Error> {
                 let path: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), $base_dir, $test_file].iter().collect();
                 cairo_lang_test_utils::parse_test_file::run_test_file(
@@ -332,7 +332,7 @@ macro_rules! test_file_test {
         mod $suite {
             use super::*;
         $(
-            #[test_log::test]
+            #[cairo_lang_test_utils::test]
             fn $test_name() -> Result<(), std::io::Error> {
                 let path: std::path::PathBuf = [env!("CARGO_MANIFEST_DIR"), $base_dir, $test_file].iter().collect();
                 cairo_lang_test_utils::parse_test_file::run_test_file(

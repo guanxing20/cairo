@@ -3,16 +3,18 @@ use cairo_lang_defs::ids::ModuleItemId;
 use cairo_lang_defs::plugin::{
     MacroPlugin, MacroPluginMetadata, PluginGeneratedFile, PluginResult,
 };
-use cairo_lang_filesystem::ids::{CodeMapping, CodeOrigin};
+use cairo_lang_filesystem::ids::{CodeMapping, CodeOrigin, SmolStrId};
 use cairo_lang_filesystem::span::TextSpan;
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{TypedSyntaxNode, ast};
 use cairo_lang_utils::extract_matches;
 use indoc::indoc;
 use itertools::Itertools;
+use salsa::Database;
 
 use crate::db::SemanticGroup;
 use crate::inline_macros::get_default_plugin_suite;
+use crate::items::free_function::FreeFunctionSemantic;
+use crate::items::module::ModuleSemantic;
 use crate::test_utils::{SemanticDatabaseForTesting, setup_test_module};
 
 #[test]
@@ -28,15 +30,18 @@ fn test_resolve() {
     .split();
 
     let module_id = test_module.module_id;
-    let db = &db_val;
-    assert!(db.module_item_by_name(module_id, "doesnt_exist".into()).unwrap().is_none());
-    let felt252_add = db.module_item_by_name(module_id, "felt252_add".into()).unwrap();
+    let db: &dyn Database = &db_val;
+    assert!(
+        db.module_item_by_name(module_id, SmolStrId::from(db, "doesnt_exist")).unwrap().is_none()
+    );
+    let felt252_add =
+        db.module_item_by_name(module_id, SmolStrId::from(db, "felt252_add")).unwrap();
     assert_eq!(format!("{:?}", felt252_add.debug(db)), "Some(ExternFunctionId(test::felt252_add))");
-    match db.module_item_by_name(module_id, "felt252_add".into()).unwrap().unwrap() {
+    match db.module_item_by_name(module_id, SmolStrId::from(db, "felt252_add")).unwrap().unwrap() {
         ModuleItemId::ExternFunction(_) => {}
         _ => panic!("Expected an extern function"),
     };
-    match db.module_item_by_name(module_id, "foo".into()).unwrap().unwrap() {
+    match db.module_item_by_name(module_id, SmolStrId::from(db, "foo")).unwrap().unwrap() {
         ModuleItemId::FreeFunction(_) => {}
         _ => panic!("Expected a free function"),
     };
@@ -63,7 +68,7 @@ fn test_resolve_data_full() {
     let module_id = test_module.module_id;
     let db = &db_val;
     let foo = extract_matches!(
-        db.module_item_by_name(module_id, "foo".into()).unwrap().unwrap(),
+        db.module_item_by_name(module_id, SmolStrId::from(db, "foo")).unwrap().unwrap(),
         ModuleItemId::FreeFunction
     );
     let resolver_data = db.free_function_body_resolver_data(foo).unwrap();
@@ -75,12 +80,12 @@ fn test_resolve_data_full() {
 #[derive(Debug, Default)]
 struct MappingsPlugin;
 impl MacroPlugin for MappingsPlugin {
-    fn generate_code(
+    fn generate_code<'db>(
         &self,
-        db: &dyn SyntaxGroup,
-        item_ast: ast::ModuleItem,
+        db: &'db dyn Database,
+        item_ast: ast::ModuleItem<'db>,
         _metadata: &MacroPluginMetadata<'_>,
-    ) -> PluginResult {
+    ) -> PluginResult<'db> {
         // Only run plugin in the test file.
         let ptr = item_ast.stable_ptr(db);
         let file = ptr.0.file_id(db);
@@ -96,9 +101,8 @@ impl MacroPlugin for MappingsPlugin {
             .flat_map(|node| {
                 let span_with_trivia = node.span(db);
                 let span_without_trivia = node.span_without_trivia(db);
-                let prefix =
-                    TextSpan { start: span_with_trivia.start, end: span_without_trivia.start };
-                let suffix = TextSpan { start: span_without_trivia.end, end: span_with_trivia.end };
+                let prefix = TextSpan::new(span_with_trivia.start, span_without_trivia.start);
+                let suffix = TextSpan::new(span_without_trivia.end, span_with_trivia.end);
                 vec![
                     CodeMapping { span: prefix, origin: CodeOrigin::Span(prefix) },
                     CodeMapping {
@@ -125,13 +129,14 @@ impl MacroPlugin for MappingsPlugin {
                 aux_data: Default::default(),
                 diagnostics_note: Default::default(),
                 code_mappings,
+                is_unhygienic: false,
             }),
             remove_original_item: true,
             ..PluginResult::default()
         }
     }
 
-    fn declared_attributes(&self) -> Vec<String> {
+    fn declared_attributes<'db>(&self, _db: &'db dyn Database) -> Vec<SmolStrId<'db>> {
         Vec::new()
     }
 }
@@ -151,11 +156,10 @@ fn test_mapping_translate_consecutive_spans() {
                 x
             }
         "#};
-    let (test_module, _diagnostics) = setup_test_module(&db_val, parent_content).split();
-    let module_id = test_module.module_id;
-
     // Read semantic diagnostics.
     let db = &mut db_val;
+    let (test_module, _diagnostics) = setup_test_module(db, parent_content).split();
+    let module_id = test_module.module_id;
     let diags = db.module_semantic_diagnostics(module_id).unwrap();
     let diags = diags.format(db);
     assert_eq!(

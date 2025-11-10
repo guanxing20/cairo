@@ -258,7 +258,7 @@ foo
 //! > module_code
 
 //! > expected_diagnostics
-error: If blocks have incompatible types: "()" and "(core::array::Array::<(?2, ?3, ?4)>,)"
+error: If blocks have incompatible types: "()" and "(core::array::Array::<(?3, ?4, ?5)>,)"
  --> lib.cairo:2:25-4:5
       let (unresolved,) = if true {} else {
  _________________________^
@@ -271,7 +271,59 @@ error: Wrong number of tuple elements in pattern. Expected: 0. Got: 1.
     let (unresolved,) = if true {} else {
         ^^^^^^^^^^^^^
 
-error[E0006]: Identifier not found.
- --> lib.cairo:5:25
-    for (_x, _y, _z) in unresolved.span() {}
-                        ^^^^^^^^^^
+//! > ==========================================================================
+
+//! > Test duplicate variables in tuple pattern let.
+
+//! > test_runner_name
+test_function_diagnostics(expect_diagnostics: true)
+
+//! > function
+fn foo() {
+    let (_a, _a) = (1, 2);
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > expected_diagnostics
+error: Redefinition of variable name "_a" in pattern.
+ --> lib.cairo:2:14
+    let (_a, _a) = (1, 2);
+             ^^
+
+//! > ==========================================================================
+
+//! > Test duplicate variables in match patterns.
+
+//! > test_runner_name
+test_function_diagnostics(expect_diagnostics: true)
+
+//! > function
+fn foo() {
+    match (1, 2) {
+        (_a, _a) => (),
+    }
+
+    match ((1, 2), 3) {
+        ((_b, _), _b) => (),
+    };
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > expected_diagnostics
+error: Redefinition of variable name "_a" in pattern.
+ --> lib.cairo:3:14
+        (_a, _a) => (),
+             ^^
+
+error: Redefinition of variable name "_b" in pattern.
+ --> lib.cairo:7:19
+        ((_b, _), _b) => (),
+                  ^^

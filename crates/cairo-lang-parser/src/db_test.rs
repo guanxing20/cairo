@@ -1,24 +1,22 @@
 use std::path::PathBuf;
 
-use cairo_lang_filesystem::ids::FileId;
+use cairo_lang_filesystem::ids::{FileId, SmolStrId};
 use cairo_lang_filesystem::span::TextSpan;
 use cairo_lang_syntax::node::ast::{
     ModuleItemList, SyntaxFile, TerminalEndOfFile, TokenEndOfFile, Trivia,
 };
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::{SyntaxNode, Terminal, Token as SyntaxToken, TypedSyntaxNode};
 use indoc::indoc;
 use pretty_assertions::assert_eq;
-use smol_str::SmolStr;
-use test_log::test;
+use salsa::Database;
 
 use crate::db::ParserGroup;
 use crate::printer::print_tree;
 use crate::test_utils::{MockToken, MockTokenStream, create_virtual_file};
 use crate::utils::{SimpleParserDatabase, get_syntax_root_and_diagnostics_from_file};
 
-fn build_empty_file_green_tree(db: &dyn SyntaxGroup, file_id: FileId) -> SyntaxFile {
-    let eof_token = TokenEndOfFile::new_green(db, SmolStr::from(""));
+fn build_empty_file_green_tree<'a>(db: &'a dyn Database, file_id: FileId<'a>) -> SyntaxFile<'a> {
+    let eof_token = TokenEndOfFile::new_green(db, SmolStrId::from(db, ""));
     let eof_terminal = TerminalEndOfFile::new_green(
         db,
         Trivia::new_green(db, &[]),
@@ -39,7 +37,7 @@ fn build_empty_file_green_tree(db: &dyn SyntaxGroup, file_id: FileId) -> SyntaxF
 fn test_parser() {
     let db = SimpleParserDatabase::default();
 
-    // Parse empty cairo file.
+    // Parse empty Cairo file.
     let file_id = create_virtual_file(&db, "file.cairo", "");
     let syntax_file = db.file_module_syntax(file_id).unwrap();
     let diagnostics = db.file_syntax_diagnostics(file_id);
@@ -72,15 +70,16 @@ fn test_token_stream_parser() {
     let token_stream = MockTokenStream::from_syntax_node(db, root_node);
     let (node_from_token_stream, _) = db.parse_token_stream(&token_stream);
 
-    let original_leaves: Vec<SyntaxNode> = root_node.tokens(db).collect();
+    let original_leaves: Vec<SyntaxNode<'_>> = root_node.tokens(db).collect();
 
-    let token_stream_origin_leaves: Vec<SyntaxNode> = node_from_token_stream.tokens(db).collect();
+    let token_stream_origin_leaves: Vec<SyntaxNode<'_>> =
+        node_from_token_stream.tokens(db).collect();
 
     assert_eq!(original_leaves.len(), token_stream_origin_leaves.len());
     assert_eq!(
         print_tree(db, &root_node, false, true),
         print_tree(db, &node_from_token_stream, false, true)
-    )
+    );
 }
 
 #[test]

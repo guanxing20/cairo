@@ -126,7 +126,7 @@ Statements:
   (v1: {closure@lib.cairo:11:5: 11:7}) <- struct_construct(v0)
   (v2: core::array::Array::<core::bytes_31::bytes31>) <- core::array::array_new::<core::bytes_31::bytes31>()
   (v3: core::felt252) <- 345232009571
-  (v4: core::integer::u32) <- 5
+  (v4: core::internal::bounded_int::BoundedInt::<0, 30>) <- 5
   (v5: core::byte_array::ByteArray) <- struct_construct(v2, v3, v4)
   (v6: core::byte_array::ByteArray, v7: @core::byte_array::ByteArray) <- snapshot(v5)
   (v8: core::never) <- core::panics::panic_with_byte_array(v7)
@@ -307,7 +307,7 @@ test_generated_function
 fn foo(a: u32) {
     let f = |a: felt252| {
         let mut b = @0;
-        if 1 == 2 {
+        if 1 == bar(2) {
             b = @a;
         } else {
             b = @a;
@@ -320,6 +320,10 @@ fn foo(a: u32) {
 foo
 
 //! > module_code
+#[inline(never)]
+fn bar(a: felt252) -> felt252 {
+    a + 1
+}
 
 //! > semantic_diagnostics
 
@@ -330,11 +334,11 @@ Main:
 Parameters: v0: core::integer::u32
 blk0 (root):
 Statements:
-  (v1: {closure@lib.cairo:2:13: 2:25}) <- struct_construct()
-  (v2: {closure@lib.cairo:2:13: 2:25}, v3: @{closure@lib.cairo:2:13: 2:25}) <- snapshot(v1)
+  (v1: {closure@lib.cairo:6:13: 6:25}) <- struct_construct()
+  (v2: {closure@lib.cairo:6:13: 6:25}, v3: @{closure@lib.cairo:6:13: 6:25}) <- snapshot(v1)
   (v4: core::felt252) <- 0
   (v5: (core::felt252,)) <- struct_construct(v4)
-  (v6: ()) <- Generated `core::ops::function::Fn::call` for {closure@lib.cairo:2:13: 2:25}(v3, v5)
+  (v6: ()) <- Generated `core::ops::function::Fn::call` for {closure@lib.cairo:6:13: 6:25}(v3, v5)
   (v7: ()) <- struct_construct()
 End:
   Return(v7)
@@ -344,13 +348,14 @@ Final lowering:
 Parameters: v0: core::integer::u32
 blk0 (root):
 Statements:
-  (v1: core::felt252) <- 1
-  (v2: core::felt252) <- 2
-  (v3: core::felt252) <- core::felt252_sub(v1, v2)
+  (v1: core::felt252) <- 2
+  (v2: core::felt252) <- test::bar(v1)
+  (v3: core::felt252) <- 1
+  (v4: core::felt252) <- core::felt252_sub(v3, v2)
 End:
-  Match(match core::felt252_is_zero(v3) {
+  Match(match core::felt252_is_zero(v4) {
     IsZeroResult::Zero => blk1,
-    IsZeroResult::NonZero(v4) => blk2,
+    IsZeroResult::NonZero(v5) => blk2,
   })
 
 blk1:
@@ -368,7 +373,7 @@ Generated core::traits::Destruct::destruct lowering for source location:
     let f = |a: felt252| {
             ^^^^^^^^^^^^
 
-Parameters: v0: {closure@lib.cairo:2:13: 2:25}
+Parameters: v0: {closure@lib.cairo:6:13: 6:25}
 blk0 (root):
 Statements:
   () <- struct_destructure(v0)
@@ -378,7 +383,7 @@ End:
 
 
 Final lowering:
-Parameters: v0: {closure@lib.cairo:2:13: 2:25}
+Parameters: v0: {closure@lib.cairo:6:13: 6:25}
 blk0 (root):
 Statements:
 End:
@@ -389,10 +394,10 @@ Generated core::ops::function::Fn::call lowering for source location:
     let f = |a: felt252| {
             ^^^^^^^^^^^^
 
-Parameters: v0: @{closure@lib.cairo:2:13: 2:25}, v2: (core::felt252,)
+Parameters: v0: @{closure@lib.cairo:6:13: 6:25}, v2: (core::felt252,)
 blk0 (root):
 Statements:
-  (v1: {closure@lib.cairo:2:13: 2:25}) <- desnap(v0)
+  (v1: {closure@lib.cairo:6:13: 6:25}) <- desnap(v0)
   () <- struct_destructure(v1)
   (v3: core::felt252) <- struct_destructure(v2)
   (v4: core::felt252) <- 0
@@ -400,44 +405,46 @@ Statements:
   (v7: core::felt252) <- 1
   (v8: core::felt252, v9: @core::felt252) <- snapshot(v7)
   (v10: core::felt252) <- 2
-  (v11: core::felt252, v12: @core::felt252) <- snapshot(v10)
-  (v13: core::bool) <- core::Felt252PartialEq::eq(v9, v12)
+  (v11: core::felt252) <- test::bar(v10)
+  (v12: core::felt252, v13: @core::felt252) <- snapshot(v11)
+  (v14: core::bool) <- core::Felt252PartialEq::eq(v9, v13)
 End:
-  Match(match_enum(v13) {
-    bool::False(v17) => blk2,
-    bool::True(v14) => blk1,
+  Match(match_enum(v14) {
+    bool::False(v16) => blk2,
+    bool::True(v15) => blk1,
   })
 
 blk1:
 Statements:
-  (v15: core::felt252, v16: @core::felt252) <- snapshot(v3)
+  (v19: core::felt252, v20: @core::felt252) <- snapshot(v3)
 End:
-  Goto(blk3, {v15 -> v20, v16 -> v21})
+  Goto(blk3, {v19 -> v21, v20 -> v22})
 
 blk2:
 Statements:
-  (v18: core::felt252, v19: @core::felt252) <- snapshot(v3)
+  (v17: core::felt252, v18: @core::felt252) <- snapshot(v3)
 End:
-  Goto(blk3, {v18 -> v20, v19 -> v21})
+  Goto(blk3, {v17 -> v21, v18 -> v22})
 
 blk3:
 Statements:
-  (v22: ()) <- struct_construct()
+  (v23: ()) <- struct_construct()
 End:
-  Return(v22)
+  Return(v23)
 
 
 Final lowering:
-Parameters: v0: @{closure@lib.cairo:2:13: 2:25}, v1: (core::felt252,)
+Parameters: v0: @{closure@lib.cairo:6:13: 6:25}, v1: (core::felt252,)
 blk0 (root):
 Statements:
-  (v2: core::felt252) <- 1
-  (v3: core::felt252) <- 2
-  (v4: core::felt252) <- core::felt252_sub(v2, v3)
+  (v2: core::felt252) <- 2
+  (v3: core::felt252) <- test::bar(v2)
+  (v4: core::felt252) <- 1
+  (v5: core::felt252) <- core::felt252_sub(v4, v3)
 End:
-  Match(match core::felt252_is_zero(v4) {
+  Match(match core::felt252_is_zero(v5) {
     IsZeroResult::Zero => blk1,
-    IsZeroResult::NonZero(v5) => blk2,
+    IsZeroResult::NonZero(v6) => blk2,
   })
 
 blk1:
@@ -597,3 +604,206 @@ Statements:
   (v27: core::felt252) <- core::felt252_add(v22, v26)
 End:
   Return(v27)
+
+//! > ==========================================================================
+
+//! > Test Nested closure
+
+//! > test_runner_name
+test_generated_function
+
+//! > function
+fn foo(a: Array<felt252>) -> u32 {
+    let inner = |x| {
+        let nested = |y| {
+            y + a.len()
+        };
+        nested(x)
+    };
+    inner(42)
+}
+
+//! > function_name
+foo
+
+//! > module_code
+
+//! > semantic_diagnostics
+
+//! > lowering_diagnostics
+
+//! > lowering
+Main:
+Parameters: v0: core::array::Array::<core::felt252>
+blk0 (root):
+Statements:
+  (v1: core::array::Array::<core::felt252>, v2: @core::array::Array::<core::felt252>) <- snapshot(v0)
+  (v3: {closure@lib.cairo:2:17: 2:20}) <- struct_construct(v2)
+  (v4: {closure@lib.cairo:2:17: 2:20}, v5: @{closure@lib.cairo:2:17: 2:20}) <- snapshot(v3)
+  (v6: core::integer::u32) <- 42
+  (v7: (core::integer::u32,)) <- struct_construct(v6)
+  (v8: core::integer::u32) <- Generated `core::ops::function::Fn::call` for {closure@lib.cairo:2:17: 2:20}(v5, v7)
+End:
+  Return(v8)
+
+
+Final lowering:
+Parameters: v0: core::RangeCheck, v1: core::array::Array::<core::felt252>
+blk0 (root):
+Statements:
+  (v2: core::array::Array::<core::felt252>, v3: @core::array::Array::<core::felt252>) <- snapshot(v1)
+  (v4: core::integer::u32) <- core::array::array_len::<core::felt252>(v3)
+  (v5: core::integer::u32) <- 42
+End:
+  Match(match core::integer::u32_overflowing_add(v0, v5, v4) {
+    Result::Ok(v6, v7) => blk1,
+    Result::Err(v8, v9) => blk2,
+  })
+
+blk1:
+Statements:
+  (v10: (core::integer::u32,)) <- struct_construct(v7)
+  (v11: core::panics::PanicResult::<(core::integer::u32,)>) <- PanicResult::Ok(v10)
+End:
+  Return(v6, v11)
+
+blk2:
+Statements:
+  (v12: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<155785504323917466144735657540098748279>()
+  (v13: core::panics::PanicResult::<(core::integer::u32,)>) <- PanicResult::Err(v12)
+End:
+  Return(v8, v13)
+
+
+Generated core::traits::Destruct::destruct lowering for source location:
+    let inner = |x| {
+                ^^^
+
+Parameters: v0: {closure@lib.cairo:2:17: 2:20}
+blk0 (root):
+Statements:
+  (v1: @core::array::Array::<core::felt252>) <- struct_destructure(v0)
+  (v2: ()) <- struct_construct()
+End:
+  Return(v2)
+
+
+Final lowering:
+Parameters: v0: {closure@lib.cairo:2:17: 2:20}
+blk0 (root):
+Statements:
+End:
+  Return()
+
+
+Generated core::traits::Destruct::destruct lowering for source location:
+        let nested = |y| {
+                     ^^^
+
+Parameters: v0: {closure@lib.cairo:3:22: 3:25}
+blk0 (root):
+Statements:
+  (v1: @core::array::Array::<core::felt252>) <- struct_destructure(v0)
+  (v2: ()) <- struct_construct()
+End:
+  Return(v2)
+
+
+Final lowering:
+Parameters: v0: {closure@lib.cairo:3:22: 3:25}
+blk0 (root):
+Statements:
+End:
+  Return()
+
+
+Generated core::ops::function::Fn::call lowering for source location:
+        let nested = |y| {
+                     ^^^
+
+Parameters: v0: @{closure@lib.cairo:3:22: 3:25}, v2: (core::integer::u32,)
+blk0 (root):
+Statements:
+  (v1: {closure@lib.cairo:3:22: 3:25}) <- desnap(v0)
+  (v3: @core::array::Array::<core::felt252>) <- struct_destructure(v1)
+  (v4: core::integer::u32) <- struct_destructure(v2)
+  (v5: core::integer::u32) <- core::array::ArrayImpl::<core::felt252>::len(v3)
+  (v6: core::integer::u32) <- core::integer::U32Add::add(v4, v5)
+End:
+  Return(v6)
+
+
+Final lowering:
+Parameters: v0: core::RangeCheck, v1: @{closure@lib.cairo:3:22: 3:25}, v2: (core::integer::u32,)
+blk0 (root):
+Statements:
+  (v3: {closure@lib.cairo:3:22: 3:25}) <- desnap(v1)
+  (v4: @core::array::Array::<core::felt252>) <- struct_destructure(v3)
+  (v5: core::integer::u32) <- core::array::array_len::<core::felt252>(v4)
+  (v6: core::integer::u32) <- struct_destructure(v2)
+End:
+  Match(match core::integer::u32_overflowing_add(v0, v6, v5) {
+    Result::Ok(v7, v8) => blk1,
+    Result::Err(v9, v10) => blk2,
+  })
+
+blk1:
+Statements:
+  (v11: (core::integer::u32,)) <- struct_construct(v8)
+  (v12: core::panics::PanicResult::<(core::integer::u32,)>) <- PanicResult::Ok(v11)
+End:
+  Return(v7, v12)
+
+blk2:
+Statements:
+  (v13: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<155785504323917466144735657540098748279>()
+  (v14: core::panics::PanicResult::<(core::integer::u32,)>) <- PanicResult::Err(v13)
+End:
+  Return(v9, v14)
+
+
+Generated core::ops::function::Fn::call lowering for source location:
+    let inner = |x| {
+                ^^^
+
+Parameters: v0: @{closure@lib.cairo:2:17: 2:20}, v2: (core::integer::u32,)
+blk0 (root):
+Statements:
+  (v1: {closure@lib.cairo:2:17: 2:20}) <- desnap(v0)
+  (v3: @core::array::Array::<core::felt252>) <- struct_destructure(v1)
+  (v4: core::integer::u32) <- struct_destructure(v2)
+  (v5: {closure@lib.cairo:3:22: 3:25}) <- struct_construct(v3)
+  (v6: {closure@lib.cairo:3:22: 3:25}, v7: @{closure@lib.cairo:3:22: 3:25}) <- snapshot(v5)
+  (v8: (core::integer::u32,)) <- struct_construct(v4)
+  (v9: core::integer::u32) <- Generated `core::ops::function::Fn::call` for {closure@lib.cairo:3:22: 3:25}(v7, v8)
+End:
+  Return(v9)
+
+
+Final lowering:
+Parameters: v0: core::RangeCheck, v1: @{closure@lib.cairo:2:17: 2:20}, v2: (core::integer::u32,)
+blk0 (root):
+Statements:
+  (v3: {closure@lib.cairo:2:17: 2:20}) <- desnap(v1)
+  (v4: @core::array::Array::<core::felt252>) <- struct_destructure(v3)
+  (v5: core::integer::u32) <- core::array::array_len::<core::felt252>(v4)
+  (v6: core::integer::u32) <- struct_destructure(v2)
+End:
+  Match(match core::integer::u32_overflowing_add(v0, v6, v5) {
+    Result::Ok(v7, v8) => blk1,
+    Result::Err(v9, v10) => blk2,
+  })
+
+blk1:
+Statements:
+  (v11: (core::integer::u32,)) <- struct_construct(v8)
+  (v12: core::panics::PanicResult::<(core::integer::u32,)>) <- PanicResult::Ok(v11)
+End:
+  Return(v7, v12)
+
+blk2:
+Statements:
+  (v13: (core::panics::Panic, core::array::Array::<core::felt252>)) <- core::panic_with_const_felt252::<155785504323917466144735657540098748279>()
+  (v14: core::panics::PanicResult::<(core::integer::u32,)>) <- PanicResult::Err(v13)
+End:
+  Return(v9, v14)

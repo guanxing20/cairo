@@ -1,5 +1,3 @@
-use std::iter;
-
 use cairo_lang_casm::ap_change::{ApChangeError, ApplyApChange};
 use cairo_lang_sierra::edit_state::{put_results, take_args};
 use cairo_lang_sierra::ids::{ConcreteTypeId, FunctionId, VarId};
@@ -67,7 +65,7 @@ pub enum AnnotationError {
     ApTrackingAlreadyEnabled { statement_idx: StatementIdx },
     #[error(
         "#{source_statement_idx}->#{destination_statement_idx}: Got '{error}' error while moving \
-         {var_id} introduced at {} .", {introduction_point}
+         {var_id} introduced at {introduction_point}."
     )]
     ApChangeError {
         var_id: VarId,
@@ -154,7 +152,7 @@ pub struct ProgramAnnotations {
 impl ProgramAnnotations {
     fn new(n_statements: usize, backwards_jump_indices: UnorderedHashSet<StatementIdx>) -> Self {
         ProgramAnnotations {
-            per_statement_annotations: iter::repeat_with(|| None).take(n_statements).collect(),
+            per_statement_annotations: vec![None; n_statements],
             backwards_jump_indices,
         }
     }

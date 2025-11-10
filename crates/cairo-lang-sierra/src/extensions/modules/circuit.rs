@@ -4,6 +4,7 @@ use std::sync::LazyLock;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
 use cairo_lang_utils::unordered_hash_set::UnorderedHashSet;
 use cairo_lang_utils::{extract_matches, require};
+use itertools::Itertools;
 use num_bigint::BigInt;
 use num_traits::{One, Signed, ToPrimitive, Zero};
 
@@ -28,7 +29,7 @@ use crate::program::{ConcreteTypeLongId, GenericArg};
 use crate::{define_libfunc_hierarchy, define_type_hierarchy};
 
 /// The set of types that are considered circuit components.
-/// A circuit it defined as Circuit<(Output0, Output1, ...)> where all the outputs are
+/// A circuit is defined as Circuit<(Output0, Output1, ...)> where all the outputs are
 /// circuit components (recursively).
 static CIRCUIT_COMPONENTS: LazyLock<UnorderedHashSet<GenericTypeId>> = LazyLock::new(|| {
     UnorderedHashSet::from_iter([
@@ -387,7 +388,7 @@ impl ConcreteType for ConcreteU96LimbsLessThanGuarantee {
 }
 
 /// A value that is guaranteed to fit in a u96.
-/// This value can only be dropped by being written to a 96bit range check.
+/// This value can only be dropped by being written to a 96-bit range check.
 #[derive(Default)]
 pub struct U96Guarantee {}
 impl NoGenericArgsGenericType for U96Guarantee {
@@ -1086,31 +1087,21 @@ fn get_circuit_info(
             let mut input_offsets = gate_inputs.map(|ty| values[ty]);
 
             if generic_id == AddModGate::ID {
-                add_offsets.push(GateOffsets {
-                    lhs: input_offsets.next().unwrap(),
-                    rhs: input_offsets.next().unwrap(),
-                    output: output_offset,
-                });
+                let [lhs, rhs] = input_offsets.next_array().unwrap();
+                add_offsets.push(GateOffsets { lhs, rhs, output: output_offset });
             } else if generic_id == SubModGate::ID {
                 // output = sub_lhs - sub_rhs => output + sub_rhs = sub_lhs.
-                let sub_lhs = input_offsets.next().unwrap();
-                let sub_rhs = input_offsets.next().unwrap();
+                let [sub_lhs, sub_rhs] = input_offsets.next_array().unwrap();
                 add_offsets.push(GateOffsets { lhs: output_offset, rhs: sub_rhs, output: sub_lhs });
             } else if generic_id == MulModGate::ID {
-                mul_offsets.push(GateOffsets {
-                    lhs: input_offsets.next().unwrap(),
-                    rhs: input_offsets.next().unwrap(),
-                    output: output_offset,
-                });
+                let [lhs, rhs] = input_offsets.next_array().unwrap();
+                mul_offsets.push(GateOffsets { lhs, rhs, output: output_offset });
             } else if generic_id == InverseGate::ID {
                 // output = 1 / input => 1 = output * input.
                 // Note that the gate will fail if the input is not invertible.
                 // Evaluating this gate successfully implies that input is invertible.
-                mul_offsets.push(GateOffsets {
-                    lhs: output_offset,
-                    rhs: input_offsets.next().unwrap(),
-                    output: ONE_OFFSET,
-                });
+                let rhs = input_offsets.next().unwrap();
+                mul_offsets.push(GateOffsets { lhs: output_offset, rhs, output: ONE_OFFSET });
             } else {
                 return Err(SpecializationError::UnsupportedGenericArg);
             };

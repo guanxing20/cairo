@@ -50,7 +50,7 @@ fn check_find_local_variables(
 
     let function_id =
         ConcreteFunctionWithBodyId::from_semantic(db, test_function.concrete_function_id);
-    let lowered_function = &*db.lowered_body(function_id, LoweringStage::Final).unwrap();
+    let lowered_function = db.lowered_body(function_id, LoweringStage::Final).unwrap();
 
     let lowered_formatter = lowering::fmt::LoweredFormatter::new(db, &lowered_function.variables);
     let lowered_str = format!("{:?}", lowered_function.debug(&lowered_formatter));
@@ -58,10 +58,8 @@ fn check_find_local_variables(
     let AnalyzeApChangesResult { known_ap_change: _, local_variables, .. } =
         super::analyze_ap_changes(db, lowered_function).unwrap();
 
-    let local_variables_str = local_variables
-        .iter()
-        .map(|var_id| format!("{:?}", var_id.debug(&lowered_formatter)))
-        .join(", ");
+    let local_variables_str =
+        local_variables.iter().map(|var_id| format!("v{:?}", var_id.index())).join(", ");
 
     TestRunnerResult::success(OrderedHashMap::from([
         ("lowering_format".into(), lowered_str),

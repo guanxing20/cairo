@@ -145,23 +145,21 @@ fn test_macro_add_ten() {
     assert_eq!(inner::add_ten!(x3), 13);
 }
 
-macro accessing_expanded_placehoders {
+macro accessing_expanded_placeholders {
     ($x:expr, $y:expr) => { ($x, $y) };
 
     ($x:expr) => {
         {
             let z = 2;
-            // TODO(Dean): Use $x directly in the macro call when supported.
-            let y = $x;
-            $defsite::accessing_expanded_placehoders!(y, z)
+            $defsite::accessing_expanded_placeholders!($x, z)
         }
     };
 }
 
 #[test]
-fn test_accessing_expanded_placehoders() {
+fn test_accessing_expanded_placeholders() {
     let x = 1;
-    assert_eq!(accessing_expanded_placehoders!(x), (1, 2));
+    assert_eq!(accessing_expanded_placeholders!(x), (1, 2));
 }
 
 macro use_z_from_callsite {
@@ -284,7 +282,7 @@ macro my_array {
 
     [$first:expr, $($rest:expr),*] => {
         {
-            let mut arr = my_array![$($rest), *];
+            let mut arr = $defsite::my_array![$($rest), *];
             arr.append($first);
             arr
         }
@@ -399,7 +397,7 @@ macro tail_only {
 
 macro wrapped_tail_only {
     () => {
-        tail_only!()
+        $defsite::tail_only!()
     };
 }
 
@@ -430,4 +428,290 @@ fn test_statements_and_tail_macro_in_statement_position() {
 #[test]
 fn test_statements_and_tail_macro_in_tail_position() -> felt252 {
     statements_and_tail!()
+}
+
+mod unhygienic_expose_plugin_macro {
+    #[test]
+    fn test_expose_variable() {
+        expose!(let a = 1;);
+        assert_eq!(a, 1);
+    }
+
+    #[test]
+    fn test_expose_multiple_variables() {
+        expose!(let a = 10; let b = 20;);
+        assert_eq!(a, 10);
+        assert_eq!(b, 20);
+    }
+
+    #[test]
+    fn test_expose_shadowing() {
+        let a = 5;
+        assert_eq!(a, 5);
+        expose!{let a = 42; };
+        assert_eq!(a, 42);
+    }
+
+    #[test]
+    fn test_expose_variable_and_use_in_macro() {
+        let x = 7;
+        expose!(let y = x + 1;);
+        assert_eq!(y, 8);
+    }
+
+    #[test]
+    fn test_expose_variable_used_in_next_expose() {
+        expose!(let a = 2;);
+        expose!(let b = a + 3;);
+        assert_eq!(a, 2);
+        assert_eq!(b, 5);
+    }
+
+    macro my_expose {
+        () => {
+            expose!(let a = 10;);
+        };
+    }
+    #[test]
+    fn test_expose_inside_a_macro() {
+        my_expose!();
+        assert_eq!(a, 10);
+    }
+
+    macro outer {
+        () => {
+            expose!(let outer_var = 11;);
+            $defsite::middle!();
+        };
+    }
+
+    macro middle {
+        () => {
+            expose!(let middle_var = 22;);
+            assert_eq!($callsite::outer_var, 11);
+            expose!(let outer_var = 1;);
+            assert_eq!(outer_var, 1);
+            $defsite::inner_most!();
+        };
+    }
+
+    macro inner_most {
+        () => {
+            expose!(let deeply_nested = 3;);
+            assert_eq!($callsite::middle_var, 22);
+            expose!(let middle_var = 2;);
+            assert_eq!(middle_var, 2);
+        };
+    }
+
+    #[test]
+    fn test_expose_deep_nested_macros() {
+        outer!();
+        assert_eq!(outer_var, 1);
+        assert_eq!(middle_var, 2);
+        assert_eq!(deeply_nested, 3);
+    }
+
+    macro set_var_macro {
+        ($val:expr) => {
+            let from_inner = $val;
+        };
+    }
+
+    macro wrap_expose_macro {
+        () => {
+            expose!($defsite::set_var_macro!(123););
+        };
+    }
+
+    #[test]
+    fn test_expose_expansion_inside_wrap_expose_macro_with_param() {
+        wrap_expose_macro!();
+        assert_eq!(from_inner, 123);
+    }
+
+    macro expose_let_var {
+        ($expr:expr) => {
+            expose!(let expose_var = $expr;);
+        };
+    }
+
+    #[test]
+    fn test_expose_let_var_macro() {
+        expose_let_var!(1);
+        assert_eq!(expose_var, 1);
+    }
+
+    macro expose_mappings_shift {
+        ($x:ident) => {
+            expose!(let y = $x + 1;);
+        };
+    }
+
+    #[test]
+    fn test_mappings_shift() {
+        let z = 1;
+        expose_mappings_shift!(z);
+        assert_eq!(y, 2);
+    }
+}
+
+mod item_level_macro {
+    macro define_fn {
+        ($name:ident) => {
+            expose! {
+                fn $name() -> felt252 { 100 }
+            }
+        };
+    }
+
+    define_fn!(func_macro_fn);
+
+    #[test]
+    fn test_func_macro_fn() {
+        assert_eq!(func_macro_fn(), 100);
+    }
+
+    macro define_ty_and_getter {
+        ($ty:ident) => {
+            expose! {
+                struct $ty { pub x: felt252 }
+                fn get_x(s: $ty) -> felt252 {
+                    s.x
+                }
+            }
+        };
+    }
+
+    define_ty_and_getter!(MyStruct);
+
+    #[test]
+    fn test_define_ty_and_getter() {
+        let s = MyStruct { x: 42 };
+        assert_eq!(get_x(s), 42);
+    }
+
+    macro define_enum {
+        ($name: ident) => {
+            expose! {
+                #[derive(PartialEq, Debug, Drop)]
+                enum $name {
+                    A,
+                    B,
+                }
+            }
+        };
+    }
+
+    define_enum!(MyEnum);
+
+    #[test]
+    fn test_enum_macro() {
+        let e = MyEnum::B;
+        assert_eq!(e, MyEnum::B);
+    }
+
+    macro generic_fn_macro {
+        () => {
+            expose! {
+                fn id<T>(x: T) -> T { x }
+            }
+        };
+    }
+
+    generic_fn_macro!();
+
+    #[test]
+    fn test_generic_fn_macro() {
+        assert_eq!(id(5), 5);
+        assert_eq!(id(123), 123);
+    }
+
+    macro define_in_mod {
+        ($module:ident, $name:ident) => {
+            expose! {
+                mod $module {
+                    pub fn $name() -> felt252 { 77 }
+                }
+            }
+        };
+    }
+
+    define_in_mod!(a, b);
+
+    #[test]
+    fn test_defined_in_mod_through_macro() {
+        assert_eq!(a::b(), 77);
+    }
+
+    macro define_outer_and_call_inner {
+        () => {
+            expose! {
+                fn outer() -> felt252 { 10 }
+                $defsite::define_inner!();
+            }
+        };
+    }
+
+    macro define_inner {
+        () => {
+            fn inner() -> felt252 { 20 }
+        };
+    }
+
+    define_outer_and_call_inner!();
+
+    #[test]
+    fn test_nested_macro_expansion() {
+        assert_eq!(outer(), 10);
+        assert_eq!(inner(), 20);
+    }
+
+    mod macro_vs_global_use {
+        mod has_foo {
+            pub fn foo() -> felt252 {
+                'in module'
+            }
+        }
+
+        macro define_foo {
+            () => {
+                expose! {
+                    fn foo() -> felt252 {
+                        'in macro'
+                    }
+                }
+            };
+        }
+        use has_foo::*;
+        define_foo!();
+
+        #[test]
+        fn test_macro_wins_over_global_use() {
+            assert_eq!(foo(), 'in macro');
+        }
+    }
+
+    mod unexposed_macro_vs_global_use {
+        mod has_foo {
+            pub fn foo() -> felt252 {
+                'in module'
+            }
+        }
+
+        macro define_foo {
+            () => {
+                fn foo() -> felt252 {
+                    'in macro'
+                }
+            };
+        }
+        use has_foo::*;
+        define_foo!();
+
+        #[test]
+        fn test_unexposed_macro_not_found() {
+            assert_eq!(foo(), 'in module');
+        }
+    }
 }

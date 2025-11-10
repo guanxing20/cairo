@@ -4,9 +4,14 @@ use anyhow::Context;
 use cairo_lang_sierra::ProgramParser;
 use cairo_lang_sierra_to_casm::compiler::SierraToCasmConfig;
 use cairo_lang_sierra_to_casm::metadata::calc_metadata;
+use cairo_lang_sierra_type_size::ProgramRegistryInfo;
 use cairo_lang_utils::logging::init_logging;
 use clap::Parser;
 use indoc::formatdoc;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Compiles a Sierra file to CASM.
 /// Exits with 0/1 if the compilation succeeds/fails.
@@ -20,7 +25,7 @@ struct Args {
 }
 
 fn main() -> anyhow::Result<()> {
-    init_logging(log::LevelFilter::Off);
+    init_logging(tracing::Level::ERROR);
     log::info!("Starting Sierra compilation.");
 
     let args = Args::parse();
@@ -36,10 +41,14 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    let program_info =
+        ProgramRegistryInfo::new(&program).with_context(|| "Failed building registry.")?;
+    let metadata = calc_metadata(&program, &program_info, Default::default())
+        .with_context(|| "Failed calculating metadata.")?;
     let cairo_program = cairo_lang_sierra_to_casm::compiler::compile(
         &program,
-        &calc_metadata(&program, Default::default())
-            .with_context(|| "Failed calculating Sierra variables.")?,
+        &program_info,
+        &metadata,
         SierraToCasmConfig { gas_usage_check: true, max_bytecode_size: usize::MAX },
     )
     .with_context(|| "Compilation failed.")?;

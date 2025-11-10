@@ -1,17 +1,17 @@
-use cairo_lang_syntax::node::db::SyntaxGroup;
+use cairo_lang_filesystem::ids::SmolStrId;
 use cairo_lang_syntax::node::helpers::{GenericParamEx, IsDependentType};
 use cairo_lang_syntax::node::{Terminal, TypedSyntaxNode, ast};
 use itertools::{Itertools, chain};
-use smol_str::SmolStr;
+use salsa::Database;
 
 /// Information on struct members or enum variants.
-pub struct MemberInfo {
-    pub name: SmolStr,
-    pub ty: String,
-    pub attributes: ast::AttributeList,
+pub struct MemberInfo<'a> {
+    pub name: &'a str,
+    pub ty: &'a str,
+    pub attributes: ast::AttributeList<'a>,
     pub is_generics_dependent: bool,
 }
-impl MemberInfo {
+impl<'a> MemberInfo<'a> {
     pub fn impl_name(&self, trt: &str) -> String {
         if self.is_generics_dependent {
             let short_name = trt.split("::").last().unwrap_or(trt);
@@ -43,15 +43,18 @@ pub enum TypeVariant {
 }
 
 /// Information on generic params.
-pub struct GenericParamsInfo {
+pub struct GenericParamsInfo<'a> {
     /// All the generic param names, at the original order.
-    pub param_names: Vec<SmolStr>,
+    pub param_names: Vec<&'a str>,
     /// The full generic params, including keywords and definitions.
-    pub full_params: Vec<String>,
+    pub full_params: Vec<&'a str>,
 }
-impl GenericParamsInfo {
+impl<'a> GenericParamsInfo<'a> {
     /// Extracts the information on generic params.
-    pub fn new(db: &dyn SyntaxGroup, generic_params: ast::OptionWrappedGenericParamList) -> Self {
+    pub fn new(
+        db: &'a dyn Database,
+        generic_params: ast::OptionWrappedGenericParamList<'a>,
+    ) -> Self {
         let ast::OptionWrappedGenericParamList::WrappedGenericParamList(gens) = generic_params
         else {
             return Self { param_names: Default::default(), full_params: Default::default() };
@@ -60,8 +63,10 @@ impl GenericParamsInfo {
             .generic_params(db)
             .elements(db)
             .map(|param| {
-                let name = param.name(db).map(|n| n.text(db)).unwrap_or_else(|| "_".into());
-                let full_param = param.as_syntax_node().get_text_without_trivia(db);
+                let name =
+                    param.name(db).map(|n| n.text(db).long(db).as_str()).unwrap_or_else(|| "_");
+                let full_param =
+                    param.as_syntax_node().get_text_without_trivia(db).long(db).as_str();
                 (name, full_param)
             })
             .unzip();
@@ -70,26 +75,24 @@ impl GenericParamsInfo {
 }
 
 /// Information for the type being processed by a plugin.
-pub struct PluginTypeInfo {
-    pub name: SmolStr,
-    pub attributes: ast::AttributeList,
-    pub generics: GenericParamsInfo,
-    pub members_info: Vec<MemberInfo>,
+pub struct PluginTypeInfo<'a> {
+    pub name: &'a str,
+    pub attributes: ast::AttributeList<'a>,
+    pub generics: GenericParamsInfo<'a>,
+    pub members_info: Vec<MemberInfo<'a>>,
     pub type_variant: TypeVariant,
 }
-impl PluginTypeInfo {
+impl<'a> PluginTypeInfo<'a> {
     /// Extracts the information on the type being derived.
-    pub fn new(db: &dyn SyntaxGroup, item_ast: &ast::ModuleItem) -> Option<Self> {
+    pub fn new(db: &'a dyn Database, item_ast: &ast::ModuleItem<'a>) -> Option<Self> {
         match item_ast {
             ast::ModuleItem::Struct(struct_ast) => {
                 let generics = GenericParamsInfo::new(db, struct_ast.generic_params(db));
-                let members_info = extract_members(
-                    db,
-                    struct_ast.members(db),
-                    &generics.param_names.iter().map(|p| p.as_str()).collect_vec(),
-                );
+                let interned =
+                    generics.param_names.iter().map(|s| SmolStrId::from(db, *s)).collect_vec();
+                let members_info = extract_members(db, struct_ast.members(db), &interned);
                 Some(Self {
-                    name: struct_ast.name(db).text(db),
+                    name: struct_ast.name(db).text(db).long(db).as_str(),
                     attributes: struct_ast.attributes(db),
                     generics,
                     members_info,
@@ -98,13 +101,10 @@ impl PluginTypeInfo {
             }
             ast::ModuleItem::Enum(enum_ast) => {
                 let generics = GenericParamsInfo::new(db, enum_ast.generic_params(db));
-                let members_info = extract_variants(
-                    db,
-                    enum_ast.variants(db),
-                    &generics.param_names.iter().map(|p| p.as_str()).collect_vec(),
-                );
+                let members_info =
+                    extract_variants(db, enum_ast.variants(db), &generics.param_names);
                 Some(Self {
-                    name: enum_ast.name(db).text(db),
+                    name: enum_ast.name(db).text(db).long(db).as_str(),
                     attributes: enum_ast.attributes(db),
                     generics,
                     members_info,
@@ -116,7 +116,7 @@ impl PluginTypeInfo {
     }
 
     /// Returns a full derived impl header - given `derived_trait` - and the `dependent_traits`
-    /// required for its all its members.
+    /// required for all its members.
     pub fn impl_header(&self, derived_trait: &str, dependent_traits: &[&str]) -> String {
         let derived_trait_name = derived_trait.split("::").last().unwrap_or(derived_trait);
         format!(
@@ -137,12 +137,12 @@ impl PluginTypeInfo {
         dep_req: fn(&str, &str) -> String,
     ) -> Vec<String> {
         chain!(
-            self.generics.full_params.iter().cloned(),
+            self.generics.full_params.iter().map(ToString::to_string),
             self.members_info.iter().filter(|m| m.is_generics_dependent).flat_map(|m| {
                 dependent_traits
                     .iter()
                     .cloned()
-                    .map(move |trt| format!("impl {}: {}", m.impl_name(trt), dep_req(trt, &m.ty)))
+                    .map(move |trt| format!("impl {}: {}", m.impl_name(trt), dep_req(trt, m.ty)))
             })
         )
         .collect()
@@ -159,16 +159,22 @@ impl PluginTypeInfo {
 }
 
 /// Extracts the information on the members of the struct.
-fn extract_members(
-    db: &dyn SyntaxGroup,
-    members: ast::MemberList,
-    generics: &[&str],
-) -> Vec<MemberInfo> {
+fn extract_members<'a>(
+    db: &'a dyn Database,
+    members: ast::MemberList<'a>,
+    generics: &[SmolStrId<'a>],
+) -> Vec<MemberInfo<'a>> {
     members
         .elements(db)
         .map(|member| MemberInfo {
-            name: member.name(db).text(db),
-            ty: member.type_clause(db).ty(db).as_syntax_node().get_text_without_trivia(db),
+            name: member.name(db).text(db).long(db).as_str(),
+            ty: member
+                .type_clause(db)
+                .ty(db)
+                .as_syntax_node()
+                .get_text_without_trivia(db)
+                .long(db)
+                .as_str(),
             attributes: member.attributes(db),
             is_generics_dependent: member.type_clause(db).ty(db).is_dependent_type(db, generics),
         })
@@ -176,25 +182,28 @@ fn extract_members(
 }
 
 /// Extracts the information on the variants of the enum.
-fn extract_variants(
-    db: &dyn SyntaxGroup,
-    variants: ast::VariantList,
+fn extract_variants<'a>(
+    db: &'a dyn Database,
+    variants: ast::VariantList<'a>,
     generics: &[&str],
-) -> Vec<MemberInfo> {
+) -> Vec<MemberInfo<'a>> {
     variants
         .elements(db)
         .map(|variant| MemberInfo {
-            name: variant.name(db).text(db),
+            name: variant.name(db).text(db).long(db).as_str(),
             ty: match variant.type_clause(db) {
-                ast::OptionTypeClause::Empty(_) => "()".to_string(),
+                ast::OptionTypeClause::Empty(_) => "()",
                 ast::OptionTypeClause::TypeClause(t) => {
-                    t.ty(db).as_syntax_node().get_text_without_trivia(db)
+                    t.ty(db).as_syntax_node().get_text_without_trivia(db).long(db).as_str()
                 }
             },
             attributes: variant.attributes(db),
             is_generics_dependent: match variant.type_clause(db) {
                 ast::OptionTypeClause::Empty(_) => false,
-                ast::OptionTypeClause::TypeClause(t) => t.ty(db).is_dependent_type(db, generics),
+                ast::OptionTypeClause::TypeClause(t) => {
+                    let interned = generics.iter().map(|s| SmolStrId::from(db, *s)).collect_vec();
+                    t.ty(db).is_dependent_type(db, &interned)
+                }
             },
         })
         .collect()

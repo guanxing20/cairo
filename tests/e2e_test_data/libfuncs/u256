@@ -94,7 +94,7 @@ jmp rel 4;
 ret;
 
 //! > function_costs
-test::foo: OrderedHashMap({Const: 6450})
+test::foo: SmallOrderedMap({Const: 6450})
 
 //! > sierra_code
 type RangeCheck = RangeCheck [storable: true, drop: false, dup: false, zero_sized: false];
@@ -149,7 +149,7 @@ ret;
 ret;
 
 //! > function_costs
-test::foo: OrderedHashMap({Const: 400})
+test::foo: SmallOrderedMap({Const: 400})
 
 //! > sierra_code
 type u128 = u128 [storable: true, drop: true, dup: true, zero_sized: false];
@@ -160,6 +160,7 @@ type NonZero<core::integer::u256> = NonZero<core::integer::u256> [storable: true
 libfunc u256_is_zero = u256_is_zero;
 libfunc branch_align = branch_align;
 libfunc const_as_immediate<Const<u128, 0>> = const_as_immediate<Const<u128, 0>>;
+libfunc dup<u128> = dup<u128>;
 libfunc struct_construct<core::integer::u256> = struct_construct<core::integer::u256>;
 libfunc store_temp<core::integer::u256> = store_temp<core::integer::u256>;
 libfunc unwrap_non_zero<core::integer::u256> = unwrap_non_zero<core::integer::u256>;
@@ -168,8 +169,8 @@ F0:
 u256_is_zero([0]) { fallthrough() F0_B0([1]) };
 branch_align() -> ();
 const_as_immediate<Const<u128, 0>>() -> ([2]);
-const_as_immediate<Const<u128, 0>>() -> ([3]);
-struct_construct<core::integer::u256>([2], [3]) -> ([4]);
+dup<u128>([2]) -> ([2], [3]);
+struct_construct<core::integer::u256>([3], [2]) -> ([4]);
 store_temp<core::integer::u256>([4]) -> ([4]);
 return([4]);
 F0_B0:
@@ -244,7 +245,7 @@ jmp rel 5;
 ret;
 
 //! > function_costs
-test::foo: OrderedHashMap({Const: 3690})
+test::foo: SmallOrderedMap({Const: 3690})
 
 //! > sierra_code
 type RangeCheck = RangeCheck [storable: true, drop: false, dup: false, zero_sized: false];
@@ -673,7 +674,7 @@ ap += 122;
 ret;
 
 //! > function_costs
-test::foo: OrderedHashMap({Const: 28470})
+test::foo: SmallOrderedMap({Const: 28470})
 
 //! > sierra_code
 type RangeCheck = RangeCheck [storable: true, drop: false, dup: false, zero_sized: false];

@@ -1,10 +1,10 @@
 use cairo_lang_defs::patcher::{ModifiedNode, RewriteNode};
 use cairo_lang_defs::plugin::PluginDiagnostic;
 use cairo_lang_starknet_classes::abi::EventFieldKind;
-use cairo_lang_syntax::node::db::SyntaxGroup;
 use cairo_lang_syntax::node::helpers::QueryAttrs;
 use cairo_lang_syntax::node::{Terminal, TypedStablePtr, TypedSyntaxNode, ast};
 use indoc::{formatdoc, indoc};
+use salsa::Database;
 
 use crate::plugin::aux_data::StarknetEventAuxData;
 use crate::plugin::consts::{
@@ -13,11 +13,11 @@ use crate::plugin::consts::{
 use crate::plugin::events::EventData;
 
 /// Returns the relevant information for the `#[derive(starknet::Event)]` attribute.
-pub fn handle_event_derive(
-    db: &dyn SyntaxGroup,
-    item_ast: &ast::ModuleItem,
-    diagnostics: &mut Vec<PluginDiagnostic>,
-) -> Option<(RewriteNode, StarknetEventAuxData)> {
+pub fn handle_event_derive<'db>(
+    db: &'db dyn Database,
+    item_ast: &ast::ModuleItem<'db>,
+    diagnostics: &mut Vec<PluginDiagnostic<'db>>,
+) -> Option<(RewriteNode<'db>, StarknetEventAuxData)> {
     match item_ast {
         ast::ModuleItem::Struct(struct_ast) => handle_struct(db, struct_ast, diagnostics),
         ast::ModuleItem::Enum(enum_ast) => handle_enum(db, enum_ast, diagnostics),
@@ -26,12 +26,12 @@ pub fn handle_event_derive(
 }
 
 // TODO(spapini): Avoid names collisions with `keys` and `data`.
-/// Derive the `Event` trait for structs annotated with `derive(starknet::Event)`.
-fn handle_struct(
-    db: &dyn SyntaxGroup,
-    struct_ast: &ast::ItemStruct,
-    diagnostics: &mut Vec<PluginDiagnostic>,
-) -> Option<(RewriteNode, StarknetEventAuxData)> {
+/// Derives the `Event` trait for structs annotated with `derive(starknet::Event)`.
+fn handle_struct<'db>(
+    db: &'db dyn Database,
+    struct_ast: &ast::ItemStruct<'db>,
+    diagnostics: &mut Vec<PluginDiagnostic<'db>>,
+) -> Option<(RewriteNode<'db>, StarknetEventAuxData)> {
     // TODO(spapini): Support generics.
     let generic_params = struct_ast.generic_params(db);
     let ast::OptionWrappedGenericParamList::Empty(_) = generic_params else {
@@ -66,7 +66,9 @@ fn handle_struct(
             &[("member_name".to_string(), member_name)].into(),
         ));
     }
-    let event_data = EventData::Struct { members };
+    let event_data = EventData::Struct {
+        members: members.into_iter().map(|(name, kind)| (name.to_string(db), kind)).collect(),
+    };
     let append_members = RewriteNode::Modified(ModifiedNode { children: Some(append_members) });
     let deserialize_members =
         RewriteNode::Modified(ModifiedNode { children: Some(deserialize_members) });
@@ -104,10 +106,10 @@ fn handle_struct(
 /// Retrieves the field kind for a given struct member,
 /// indicating how the field should be serialized.
 /// See [EventFieldKind].
-fn get_field_kind_for_member(
-    db: &dyn SyntaxGroup,
-    diagnostics: &mut Vec<PluginDiagnostic>,
-    member: &ast::Member,
+fn get_field_kind_for_member<'db>(
+    db: &'db dyn Database,
+    diagnostics: &mut Vec<PluginDiagnostic<'db>>,
+    member: &ast::Member<'db>,
     default: EventFieldKind,
 ) -> EventFieldKind {
     let is_nested = member.has_attr(db, NESTED_ATTR);
@@ -138,10 +140,10 @@ fn get_field_kind_for_member(
 /// Retrieves the field kind for a given enum variant,
 /// indicating how the field should be serialized.
 /// See [EventFieldKind].
-fn get_field_kind_for_variant(
-    db: &dyn SyntaxGroup,
-    diagnostics: &mut Vec<PluginDiagnostic>,
-    variant: &ast::Variant,
+fn get_field_kind_for_variant<'db>(
+    db: &'db dyn Database,
+    diagnostics: &mut Vec<PluginDiagnostic<'db>>,
+    variant: &ast::Variant<'db>,
     default: EventFieldKind,
 ) -> EventFieldKind {
     let is_nested = variant.has_attr(db, NESTED_ATTR);
@@ -175,12 +177,12 @@ fn get_field_kind_for_variant(
     default
 }
 
-/// Derive the `Event` trait for enums annotated with `derive(starknet::Event)`.
-fn handle_enum(
-    db: &dyn SyntaxGroup,
-    enum_ast: &ast::ItemEnum,
-    diagnostics: &mut Vec<PluginDiagnostic>,
-) -> Option<(RewriteNode, StarknetEventAuxData)> {
+/// Derives the `Event` trait for enums annotated with `derive(starknet::Event)`.
+fn handle_enum<'db>(
+    db: &'db dyn Database,
+    enum_ast: &ast::ItemEnum<'db>,
+    diagnostics: &mut Vec<PluginDiagnostic<'db>>,
+) -> Option<(RewriteNode<'db>, StarknetEventAuxData)> {
     const SELECTOR: &str = "__selector__";
     let enum_name = RewriteNode::from_ast_trimmed(&enum_ast.name(db));
 
@@ -291,7 +293,9 @@ fn handle_enum(
         );
         event_into_impls.push(into_impl);
     }
-    let event_data = EventData::Enum { variants };
+    let event_data = EventData::Enum {
+        variants: variants.into_iter().map(|(name, kind)| (name.to_string(db), kind)).collect(),
+    };
     let append_variants = RewriteNode::Modified(ModifiedNode { children: Some(append_variants) });
     let deserialize_flat_variants =
         RewriteNode::Modified(ModifiedNode { children: Some(deserialize_flat_variants) });
@@ -337,7 +341,7 @@ fn handle_enum(
 }
 
 /// Generates code to emit an event for a field
-fn append_field(member_kind: EventFieldKind, field: RewriteNode) -> RewriteNode {
+fn append_field<'db>(member_kind: EventFieldKind, field: RewriteNode<'db>) -> RewriteNode<'db> {
     match member_kind {
         EventFieldKind::Nested | EventFieldKind::Flat => RewriteNode::interpolate_patched(
             &format!(
@@ -361,7 +365,10 @@ fn append_field(member_kind: EventFieldKind, field: RewriteNode) -> RewriteNode 
     }
 }
 
-fn deserialize_field(member_kind: EventFieldKind, member_name: RewriteNode) -> RewriteNode {
+fn deserialize_field<'db>(
+    member_kind: EventFieldKind,
+    member_name: RewriteNode<'db>,
+) -> RewriteNode<'db> {
     RewriteNode::interpolate_patched(
         match member_kind {
             EventFieldKind::Nested | EventFieldKind::Flat => {
@@ -387,7 +394,7 @@ fn deserialize_field(member_kind: EventFieldKind, member_name: RewriteNode) -> R
     )
 }
 
-fn try_deserialize_field(member_kind: EventFieldKind) -> RewriteNode {
+fn try_deserialize_field<'db>(member_kind: EventFieldKind) -> RewriteNode<'db> {
     RewriteNode::text(match member_kind {
         EventFieldKind::Nested | EventFieldKind::Flat => {
             "starknet::Event::deserialize(ref keys, ref data)"

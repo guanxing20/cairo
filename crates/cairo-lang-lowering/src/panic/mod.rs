@@ -2,22 +2,26 @@ use std::collections::VecDeque;
 
 use assert_matches::assert_matches;
 use cairo_lang_diagnostics::Maybe;
+use cairo_lang_filesystem::db::FilesGroup;
 use cairo_lang_filesystem::flag::{Flag, flag_unsafe_panic};
-use cairo_lang_filesystem::ids::FlagId;
+use cairo_lang_filesystem::ids::{FlagId, FlagLongId, SmolStrId};
 use cairo_lang_semantic::corelib::{
-    core_submodule, get_core_enum_concrete_variant, get_function_id, get_panic_ty, never_ty,
+    CorelibSemantic, core_submodule, get_core_enum_concrete_variant, get_function_id, get_panic_ty,
+    never_ty,
 };
 use cairo_lang_semantic::helper::ModuleHelper;
 use cairo_lang_semantic::items::constant::ConstValue;
 use cairo_lang_semantic::{self as semantic, GenericArgumentId};
-use cairo_lang_utils::{Intern, Upcast};
+use cairo_lang_utils::Intern;
 use itertools::{Itertools, chain, zip_eq};
+use salsa::Database;
 use semantic::{ConcreteVariant, MatchArmSelector, TypeId};
 
 use crate::blocks::BlocksBuilder;
 use crate::db::{ConcreteSCCRepresentative, LoweringGroup};
 use crate::ids::{
-    ConcreteFunctionWithBodyId, FunctionId, FunctionLongId, SemanticFunctionIdEx, Signature,
+    ConcreteFunctionWithBodyId, FunctionId, FunctionLongId, LocationId, SemanticFunctionIdEx,
+    Signature,
 };
 use crate::lower::context::{VarRequest, VariableAllocator};
 use crate::{
@@ -31,10 +35,10 @@ use crate::{
 
 /// Lowering phase that converts `BlockEnd::Panic` into `BlockEnd::Return`, and wraps necessary
 /// types with `PanicResult<>`.
-pub fn lower_panics(
-    db: &dyn LoweringGroup,
-    function_id: ConcreteFunctionWithBodyId,
-    lowered: &mut Lowered,
+pub fn lower_panics<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
+    lowered: &mut Lowered<'db>,
 ) -> Maybe<()> {
     // Skip this phase for non panicable functions.
     if !db.function_with_body_may_panic(function_id)? {
@@ -42,7 +46,7 @@ pub fn lower_panics(
     }
 
     let opt_trace_fn = if matches!(
-        db.get_flag(FlagId::new(db, "panic_backtrace")),
+        db.get_flag(FlagId::new(db, FlagLongId("panic_backtrace".into()))),
         Some(flag) if matches!(*flag, Flag::PanicBacktrace(true)),
     ) {
         Some(
@@ -70,8 +74,7 @@ pub fn lower_panics(
     }
 
     let signature = function_id.signature(db)?;
-    // All types should be fully concrete at this point.
-    assert!(signature.is_fully_concrete(db));
+    // TODO(orizi): Validate all signature types are fully concrete at this point.
     let panic_info = PanicSignatureInfo::new(db, &signature);
     let variables = VariableAllocator::new(
         db,
@@ -113,15 +116,19 @@ pub fn lower_panics(
 
 /// Lowering phase that converts BlockEnd::Panic into BlockEnd::Match { function: unsafe_panic }.
 /// 'opt_trace_fn' is an optional function to call before the panic.
-fn lower_unsafe_panic(
-    db: &dyn LoweringGroup,
-    lowered: &mut Lowered,
-    opt_trace_fn: Option<FunctionId>,
+fn lower_unsafe_panic<'db>(
+    db: &'db dyn Database,
+    lowered: &mut Lowered<'db>,
+    opt_trace_fn: Option<FunctionId<'db>>,
 ) {
-    let panics = core_submodule(db, "panics");
-    let panic_func_id =
-        FunctionLongId::Semantic(get_function_id(db, panics, "unsafe_panic".into(), vec![]))
-            .intern(db);
+    let panics = core_submodule(db, SmolStrId::from(db, "panics"));
+    let panic_func_id = FunctionLongId::Semantic(get_function_id(
+        db,
+        panics,
+        SmolStrId::from(db, "unsafe_panic"),
+        vec![],
+    ))
+    .intern(db);
 
     for block in lowered.blocks.iter_mut() {
         let BlockEnd::Panic(err_data) = &mut block.end else {
@@ -162,10 +169,10 @@ fn lower_unsafe_panic(
 }
 
 /// Handles the lowering of panics in a single block.
-fn handle_block(
-    mut ctx: PanicLoweringContext<'_>,
-    mut block: Block,
-) -> Maybe<PanicLoweringContext<'_>> {
+fn handle_block<'db>(
+    mut ctx: PanicLoweringContext<'db>,
+    mut block: Block<'db>,
+) -> Maybe<PanicLoweringContext<'db>> {
     let mut block_ctx = PanicBlockLoweringContext { ctx, statements: Vec::new() };
     for (i, stmt) in block.statements.iter().cloned().enumerate() {
         if let Some((cur_block_end, continuation_block)) = block_ctx.handle_statement(&stmt)? {
@@ -188,23 +195,23 @@ fn handle_block(
     Ok(ctx)
 }
 
-pub struct PanicSignatureInfo {
+pub struct PanicSignatureInfo<'db> {
     /// The types of all the variables returned on OK: Reference variables and the original result.
-    ok_ret_tys: Vec<TypeId>,
+    ok_ret_tys: Vec<TypeId<'db>>,
     /// The type of the Ok() variant.
-    ok_ty: TypeId,
+    ok_ty: TypeId<'db>,
     /// The Ok() variant.
-    ok_variant: ConcreteVariant,
+    ok_variant: ConcreteVariant<'db>,
     /// The Err() variant.
-    pub err_variant: ConcreteVariant,
+    pub err_variant: ConcreteVariant<'db>,
     /// The PanicResult concrete type - the new return type of the function.
-    pub actual_return_ty: TypeId,
+    pub actual_return_ty: TypeId<'db>,
     /// Does the function always panic.
     /// Note that if it does - the function returned type is always `(Panic, Array<felt252>)`.
     pub always_panic: bool,
 }
-impl PanicSignatureInfo {
-    pub fn new(db: &dyn LoweringGroup, signature: &Signature) -> Self {
+impl<'db> PanicSignatureInfo<'db> {
+    pub fn new(db: &'db dyn Database, signature: &Signature<'db>) -> Self {
         let extra_rets = signature.extra_rets.iter().map(|param| param.ty());
         let original_return_ty = signature.return_type;
 
@@ -212,15 +219,15 @@ impl PanicSignatureInfo {
         let ok_ty = semantic::TypeLongId::Tuple(ok_ret_tys.clone()).intern(db);
         let ok_variant = get_core_enum_concrete_variant(
             db,
-            "PanicResult",
+            SmolStrId::from(db, "PanicResult"),
             vec![GenericArgumentId::Type(ok_ty)],
-            "Ok",
+            SmolStrId::from(db, "Ok"),
         );
         let err_variant = get_core_enum_concrete_variant(
             db,
-            "PanicResult",
+            SmolStrId::from(db, "PanicResult"),
             vec![GenericArgumentId::Type(ok_ty)],
-            "Err",
+            SmolStrId::from(db, "Err"),
         );
         let always_panic = original_return_ty == never_ty(db);
         let panic_ty = if always_panic { err_variant.ty } else { get_panic_ty(db, ok_ty) };
@@ -236,34 +243,34 @@ impl PanicSignatureInfo {
     }
 }
 
-struct PanicLoweringContext<'a> {
-    variables: VariableAllocator<'a>,
-    block_queue: VecDeque<Block>,
-    flat_blocks: BlocksBuilder,
-    panic_info: PanicSignatureInfo,
+struct PanicLoweringContext<'db> {
+    variables: VariableAllocator<'db>,
+    block_queue: VecDeque<Block<'db>>,
+    flat_blocks: BlocksBuilder<'db>,
+    panic_info: PanicSignatureInfo<'db>,
 }
-impl PanicLoweringContext<'_> {
-    pub fn db(&self) -> &dyn LoweringGroup {
+impl<'db> PanicLoweringContext<'db> {
+    pub fn db(&self) -> &'db dyn Database {
         self.variables.db
     }
 
-    fn enqueue_block(&mut self, block: Block) -> BlockId {
+    fn enqueue_block(&mut self, block: Block<'db>) -> BlockId {
         self.block_queue.push_back(block);
         BlockId(self.flat_blocks.len() + self.block_queue.len())
     }
 }
 
-struct PanicBlockLoweringContext<'a> {
-    ctx: PanicLoweringContext<'a>,
-    statements: Vec<Statement>,
+struct PanicBlockLoweringContext<'db> {
+    ctx: PanicLoweringContext<'db>,
+    statements: Vec<Statement<'db>>,
 }
-impl<'a> PanicBlockLoweringContext<'a> {
-    pub fn db(&self) -> &dyn LoweringGroup {
+impl<'db> PanicBlockLoweringContext<'db> {
+    pub fn db(&self) -> &'db dyn Database {
         self.ctx.db()
     }
 
-    fn new_var(&mut self, req: VarRequest) -> VariableId {
-        self.ctx.variables.new_var(req)
+    fn new_var(&mut self, ty: TypeId<'db>, location: LocationId<'db>) -> VariableId {
+        self.ctx.variables.new_var(VarRequest { ty, location })
     }
 
     /// Handles a statement. If needed, returns the continuation block and the block end for this
@@ -272,13 +279,15 @@ impl<'a> PanicBlockLoweringContext<'a> {
     /// The continuation block is the second block in the "split". This function already partially
     /// creates this second block, and returns it.
     /// In case there is no panic match - but just a panic, there is no continuation block.
-    fn handle_statement(&mut self, stmt: &Statement) -> Maybe<Option<(BlockEnd, Option<BlockId>)>> {
-        if let Statement::Call(call) = &stmt {
-            if let Some(with_body) = call.function.body(self.db())? {
-                if self.db().function_with_body_may_panic(with_body)? {
-                    return Ok(Some(self.handle_call_panic(call)?));
-                }
-            }
+    fn handle_statement(
+        &mut self,
+        stmt: &Statement<'db>,
+    ) -> Maybe<Option<(BlockEnd<'db>, Option<BlockId>)>> {
+        if let Statement::Call(call) = &stmt
+            && let Some(with_body) = call.function.body(self.db())?
+            && self.db().function_with_body_may_panic(with_body)?
+        {
+            return Ok(Some(self.handle_call_panic(call)?));
         }
         self.statements.push(stmt.clone());
         Ok(None)
@@ -287,18 +296,20 @@ impl<'a> PanicBlockLoweringContext<'a> {
     /// Handles a call statement to a panicking function.
     /// Returns the continuation block ID for the caller to complete it, and the block end to set
     /// for the current block.
-    fn handle_call_panic(&mut self, call: &StatementCall) -> Maybe<(BlockEnd, Option<BlockId>)> {
+    fn handle_call_panic(
+        &mut self,
+        call: &StatementCall<'db>,
+    ) -> Maybe<(BlockEnd<'db>, Option<BlockId>)> {
         // Extract return variable.
         let mut original_outputs = call.outputs.clone();
         let location = call.location.with_auto_generation_note(self.db(), "Panic handling");
 
         // Get callee info.
-        let callee_signature = call.function.signature(self.ctx.variables.db)?;
-        let callee_info = PanicSignatureInfo::new(self.ctx.variables.db, &callee_signature);
+        let callee_signature = call.function.signature(self.db())?;
+        let callee_info = PanicSignatureInfo::new(self.db(), &callee_signature);
         if callee_info.always_panic {
             // The panic value, which is actually of type (Panics, Array<felt252>).
-            let panic_result_var =
-                self.new_var(VarRequest { ty: callee_info.actual_return_ty, location });
+            let panic_result_var = self.new_var(callee_info.actual_return_ty, location);
             // Emit the new statement.
             self.statements.push(Statement::Call(StatementCall {
                 function: call.function,
@@ -312,19 +323,18 @@ impl<'a> PanicBlockLoweringContext<'a> {
 
         // Allocate 2 new variables.
         // panic_result_var - for the new return variable, with is actually of type PanicResult<ty>.
-        let panic_result_var =
-            self.new_var(VarRequest { ty: callee_info.actual_return_ty, location });
+        let panic_result_var = self.new_var(callee_info.actual_return_ty, location);
         let n_callee_implicits = original_outputs.len() - callee_info.ok_ret_tys.len();
         let mut call_outputs = original_outputs.drain(..n_callee_implicits).collect_vec();
         call_outputs.push(panic_result_var);
         // inner_ok_value - for the Ok() match arm input.
-        let inner_ok_value = self.new_var(VarRequest { ty: callee_info.ok_ty, location });
+        let inner_ok_value = self.new_var(callee_info.ok_ty, location);
         // inner_ok_values - for the destructure.
         let inner_ok_values = callee_info
             .ok_ret_tys
             .iter()
             .copied()
-            .map(|ty| self.new_var(VarRequest { ty, location }))
+            .map(|ty| self.new_var(ty, location))
             .collect_vec();
 
         // Emit the new statement.
@@ -361,7 +371,7 @@ impl<'a> PanicBlockLoweringContext<'a> {
         });
 
         // Prepare Err() match arm block.
-        let err_var = self.new_var(VarRequest { ty: self.ctx.panic_info.err_variant.ty, location });
+        let err_var = self.new_var(self.ctx.panic_info.err_variant.ty, location);
         let block_err = self.ctx.enqueue_block(Block {
             statements: vec![],
             end: BlockEnd::Panic(VarUsage { var_id: err_var, location }),
@@ -390,7 +400,7 @@ impl<'a> PanicBlockLoweringContext<'a> {
         Ok((cur_block_end, Some(block_continuation)))
     }
 
-    fn handle_end(mut self, end: BlockEnd) -> PanicLoweringContext<'a> {
+    fn handle_end(mut self, end: BlockEnd<'db>) -> PanicLoweringContext<'db> {
         let end = match end {
             BlockEnd::Goto(target, remapping) => BlockEnd::Goto(target, remapping),
             BlockEnd::Panic(err_data) => {
@@ -400,7 +410,7 @@ impl<'a> PanicBlockLoweringContext<'a> {
                 let output = if self.ctx.panic_info.always_panic {
                     err_data.var_id
                 } else {
-                    let output = self.new_var(VarRequest { ty, location });
+                    let output = self.new_var(ty, location);
                     self.statements.push(Statement::EnumConstruct(StatementEnumConstruct {
                         variant: self.ctx.panic_info.err_variant,
                         input: err_data,
@@ -412,8 +422,7 @@ impl<'a> PanicBlockLoweringContext<'a> {
             }
             BlockEnd::Return(returns, location) => {
                 // Tuple construction.
-                let tupled_res =
-                    self.new_var(VarRequest { ty: self.ctx.panic_info.ok_ty, location });
+                let tupled_res = self.new_var(self.ctx.panic_info.ok_ty, location);
                 self.statements.push(Statement::StructConstruct(StatementStructConstruct {
                     inputs: returns,
                     output: tupled_res,
@@ -421,7 +430,7 @@ impl<'a> PanicBlockLoweringContext<'a> {
 
                 // Wrap with PanicResult::Ok.
                 let ty = self.ctx.panic_info.actual_return_ty;
-                let output = self.new_var(VarRequest { ty, location });
+                let output = self.new_var(ty, location);
                 self.statements.push(Statement::EnumConstruct(StatementEnumConstruct {
                     variant: self.ctx.panic_info.ok_variant,
                     input: VarUsage { var_id: tupled_res, location },
@@ -440,7 +449,8 @@ impl<'a> PanicBlockLoweringContext<'a> {
 // ============= Query implementations =============
 
 /// Query implementation of [crate::db::LoweringGroup::function_may_panic].
-pub fn function_may_panic(db: &dyn LoweringGroup, function: FunctionId) -> Maybe<bool> {
+#[salsa::tracked]
+pub fn function_may_panic<'db>(db: &'db dyn Database, function: FunctionId<'db>) -> Maybe<bool> {
     if let Some(body) = function.body(db)? {
         return db.function_with_body_may_panic(body);
     }
@@ -448,23 +458,36 @@ pub fn function_may_panic(db: &dyn LoweringGroup, function: FunctionId) -> Maybe
 }
 
 /// A trait to add helper methods in [LoweringGroup].
-pub trait MayPanicTrait<'a>: Upcast<dyn LoweringGroup + 'a> {
+pub trait MayPanicTrait<'db>: Database {
     /// Returns whether a [ConcreteFunctionWithBodyId] may panic.
-    fn function_with_body_may_panic(&self, function: ConcreteFunctionWithBodyId) -> Maybe<bool> {
-        let scc_representative = self.upcast().lowered_scc_representative(
+    fn function_with_body_may_panic(
+        &'db self,
+        function: ConcreteFunctionWithBodyId<'db>,
+    ) -> Maybe<bool> {
+        let db: &'db dyn Database = self.as_dyn_database();
+        let scc_representative = db.lowered_scc_representative(
             function,
             DependencyType::Call,
             LoweringStage::Monomorphized,
         );
-        self.upcast().scc_may_panic(scc_representative)
+        scc_may_panic(db, scc_representative)
     }
 }
-impl<'a, T: Upcast<dyn LoweringGroup + 'a> + ?Sized> MayPanicTrait<'a> for T {}
+impl<'db, T: Database + ?Sized> MayPanicTrait<'db> for T {}
 
-/// Query implementation of [crate::db::LoweringGroup::scc_may_panic].
-pub fn scc_may_panic(db: &dyn LoweringGroup, scc: ConcreteSCCRepresentative) -> Maybe<bool> {
+/// Returns whether any function in the strongly connected component may panic.
+fn scc_may_panic<'db>(db: &'db dyn Database, scc: ConcreteSCCRepresentative<'db>) -> Maybe<bool> {
+    scc_may_panic_tracked(db, scc.0)
+}
+
+/// Tracked implementation of [scc_may_panic].
+#[salsa::tracked]
+fn scc_may_panic_tracked<'db>(
+    db: &'db dyn Database,
+    rep: ConcreteFunctionWithBodyId<'db>,
+) -> Maybe<bool> {
     // Find the SCC representative.
-    let scc_functions = db.lowered_scc(scc.0, DependencyType::Call, LoweringStage::Monomorphized);
+    let scc_functions = db.lowered_scc(rep, DependencyType::Call, LoweringStage::Monomorphized);
     for function in scc_functions {
         if db.needs_withdraw_gas(function)? {
             return Ok(true);
@@ -485,7 +508,7 @@ pub fn scc_may_panic(db: &dyn LoweringGroup, scc: ConcreteSCCRepresentative) -> 
                     DependencyType::Call,
                     LoweringStage::Monomorphized,
                 );
-                if callee_scc != scc && db.scc_may_panic(callee_scc)? {
+                if callee_scc.0 != rep && scc_may_panic(db, callee_scc)? {
                     return Ok(true);
                 }
             } else if direct_callee.signature(db)?.panicable {
@@ -497,12 +520,13 @@ pub fn scc_may_panic(db: &dyn LoweringGroup, scc: ConcreteSCCRepresentative) -> 
 }
 
 /// Query implementation of [crate::db::LoweringGroup::has_direct_panic].
-pub fn has_direct_panic(
-    db: &dyn LoweringGroup,
-    function_id: ConcreteFunctionWithBodyId,
+#[salsa::tracked]
+pub fn has_direct_panic<'db>(
+    db: &'db dyn Database,
+    function_id: ConcreteFunctionWithBodyId<'db>,
 ) -> Maybe<bool> {
     let lowered_function = db.lowered_body(function_id, LoweringStage::Monomorphized)?;
-    Ok(itertools::any(&lowered_function.blocks, |(_, block)| {
+    Ok(itertools::any(lowered_function.blocks.iter(), |(_, block)| {
         matches!(&block.end, BlockEnd::Panic(..))
     }))
 }

@@ -11,7 +11,7 @@ use cairo_lang_starknet_classes::casm_contract_class::{
 use cairo_lang_starknet_classes::compiler_version::VersionId;
 use cairo_lang_starknet_classes::contract_class::{ContractClass, ContractEntryPoints};
 use cairo_lang_utils::bigint::BigUintAsHex;
-use clap::{Parser, arg};
+use clap::Parser;
 use indicatif::{MultiProgress, ProgressBar, ProgressState, ProgressStyle};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -52,8 +52,8 @@ struct Cli {
     /// files should be provided.
     #[arg(
         long,
-        requires_ifs = [("fullnode_url", "FullnodeArgs")], 
-        required_unless_present = "input_files", 
+        requires_ifs = [("fullnode_url", "FullnodeArgs")],
+        required_unless_present = "input_files",
         conflicts_with = "input_files"
     )]
     fullnode_url: Option<String>,
@@ -89,14 +89,14 @@ fn parse_version_id(major_minor_patch: &str) -> anyhow::Result<VersionId> {
     })
 }
 
-/// The contract class from db.
+/// The contract class from the DB.
 #[derive(Serialize, Deserialize)]
 pub struct ContractClassInfo {
     /// The previous compiled class hash.
     pub compiled_class_hash: BigUintAsHex,
     /// The class hash.
     pub class_hash: BigUintAsHex,
-    /// The sierra program.
+    /// The Sierra program.
     pub sierra_program: Vec<BigUintAsHex>,
     /// The entry points by type.
     pub entry_points_by_type: ContractEntryPoints,

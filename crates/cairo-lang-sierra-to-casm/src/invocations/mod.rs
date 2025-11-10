@@ -7,7 +7,7 @@ use cairo_lang_casm::operand::{CellRef, Register};
 use cairo_lang_sierra::extensions::circuit::CircuitInfo;
 use cairo_lang_sierra::extensions::core::CoreConcreteLibfunc::{self, *};
 use cairo_lang_sierra::extensions::coupon::CouponConcreteLibfunc;
-use cairo_lang_sierra::extensions::gas::CostTokenType;
+use cairo_lang_sierra::extensions::gas::{CostTokenMap, CostTokenType};
 use cairo_lang_sierra::extensions::lib_func::{BranchSignature, OutputVarInfo, SierraApChange};
 use cairo_lang_sierra::extensions::{ConcreteLibfunc, OutputVarReferenceInfo};
 use cairo_lang_sierra::ids::ConcreteTypeId;
@@ -18,7 +18,6 @@ use cairo_lang_sierra_ap_change::core_libfunc_ap_change::{
 use cairo_lang_sierra_gas::core_libfunc_cost::{InvocationCostInfoProvider, core_libfunc_cost};
 use cairo_lang_sierra_gas::objects::ConstCost;
 use cairo_lang_sierra_type_size::TypeSizeMap;
-use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
 use itertools::{Itertools, chain, zip_eq};
 use num_bigint::BigInt;
@@ -87,9 +86,9 @@ pub enum InvocationError {
     UnknownTypeData,
     #[error("Expected variable data for statement not found.")]
     UnknownVariableData,
-    #[error("An integer overflow occurred.")]
-    InvalidGenericArg,
     #[error("Invalid generic argument for libfunc.")]
+    InvalidGenericArg,
+    #[error("An integer overflow occurred.")]
     IntegerOverflow,
     #[error(transparent)]
     FrameStateError(#[from] FrameStateError),
@@ -123,7 +122,7 @@ pub struct BranchChanges {
     /// A change to the ap tracking status.
     pub ap_tracking_change: ApTrackingChange,
     /// The change to the remaining gas value in the wallet.
-    pub gas_change: OrderedHashMap<CostTokenType, i64>,
+    pub gas_change: CostTokenMap<i64>,
     /// Should the stack be cleared due to a gap between stack items.
     pub clear_old_stack: bool,
     /// The expected size of the known stack after the change.
@@ -135,7 +134,7 @@ impl BranchChanges {
     fn new<'a, ParamRef: Fn(usize) -> &'a ReferenceValue>(
         ap_change: ApChange,
         ap_tracking_change: ApTrackingChange,
-        gas_change: OrderedHashMap<CostTokenType, i64>,
+        gas_change: CostTokenMap<i64>,
         expressions: impl ExactSizeIterator<Item = ReferenceExpression>,
         branch_signature: &BranchSignature,
         prev_env: &Environment,
@@ -310,7 +309,7 @@ pub fn check_references_on_stack(refs: &[ReferenceValue]) -> Result<(), Invocati
     Ok(())
 }
 
-/// The cells per returned Sierra variables, in casm-builder vars.
+/// The cells per returned Sierra variables, in CASM-builder vars.
 type VarCells = [Var];
 /// The configuration for all Sierra variables returned from a libfunc.
 type AllVars<'a> = [&'a VarCells];
@@ -481,7 +480,7 @@ impl CompiledInvocationBuilder<'_> {
         }
     }
 
-    /// Builds a `CompiledInvocation` from a casm builder and branch extractions.
+    /// Builds a `CompiledInvocation` from a CASM builder and branch extractions.
     /// Per branch requires `(name, result_variables, target_statement_id)`.
     fn build_from_casm_builder<const BRANCH_COUNT: usize>(
         self,
@@ -497,7 +496,7 @@ impl CompiledInvocationBuilder<'_> {
         )
     }
 
-    /// Builds a `CompiledInvocation` from a casm builder and branch extractions.
+    /// Builds a `CompiledInvocation` from a CASM builder and branch extractions.
     /// Per branch requires `(name, result_variables, target_statement_id)`.
     ///
     /// `pre_instructions` - Instructions to execute before the ones created by the builder.
@@ -645,7 +644,7 @@ pub struct ProgramInfo<'a> {
     pub const_data_values: &'a dyn Fn(&ConcreteTypeId) -> Vec<BigInt>,
 }
 
-/// Given a Sierra invocation statement and concrete libfunc, creates a compiled casm representation
+/// Given a Sierra invocation statement and concrete libfunc, creates a compiled CASM representation
 /// of the Sierra statement.
 pub fn compile_invocation(
     program_info: ProgramInfo<'_>,

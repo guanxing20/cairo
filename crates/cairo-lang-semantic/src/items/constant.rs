@@ -2,13 +2,16 @@ use std::iter::zip;
 use std::sync::Arc;
 
 use cairo_lang_debug::DebugWithDb;
+use cairo_lang_defs::db::DefsGroup;
 use cairo_lang_defs::ids::{
     ConstantId, ExternFunctionId, GenericParamId, LanguageElementId, LookupItemId, ModuleItemId,
     NamedLanguageElementId, TopLevelLanguageElementId, TraitConstantId, TraitId, VarId,
 };
 use cairo_lang_diagnostics::{
-    DiagnosticAdded, DiagnosticEntry, DiagnosticNote, Diagnostics, Maybe, ToMaybe, skip_diagnostic,
+    DiagnosticAdded, DiagnosticEntry, DiagnosticNote, Diagnostics, Maybe, MaybeAsRef,
+    skip_diagnostic,
 };
+use cairo_lang_filesystem::ids::SmolStrId;
 use cairo_lang_proc_macros::{DebugWithDb, SemanticObject};
 use cairo_lang_syntax::node::ast::ItemConstant;
 use cairo_lang_syntax::node::ids::SyntaxStablePtrId;
@@ -16,29 +19,31 @@ use cairo_lang_syntax::node::{TypedStablePtr, TypedSyntaxNode};
 use cairo_lang_utils::ordered_hash_map::OrderedHashMap;
 use cairo_lang_utils::unordered_hash_map::UnorderedHashMap;
 use cairo_lang_utils::unordered_hash_set::UnorderedHashSet;
-use cairo_lang_utils::{
-    Intern, LookupIntern, define_short_id, extract_matches, require, try_extract_matches,
-};
+use cairo_lang_utils::{Intern, define_short_id, extract_matches, require, try_extract_matches};
 use itertools::Itertools;
 use num_bigint::BigInt;
 use num_traits::{Num, ToPrimitive, Zero};
-use smol_str::SmolStr;
+use salsa::Database;
 
 use super::functions::{GenericFunctionId, GenericFunctionWithBodyId};
 use super::imp::{ImplId, ImplLongId};
 use crate::corelib::{
-    CoreInfo, LiteralError, core_box_ty, core_nonzero_ty, false_variant, get_core_ty_by_name,
+    CoreInfo, CorelibSemantic, LiteralError, core_nonzero_ty, false_variant, get_core_ty_by_name,
     true_variant, try_extract_nz_wrapped_type, unit_ty, validate_literal,
 };
-use crate::db::SemanticGroup;
 use crate::diagnostic::{SemanticDiagnosticKind, SemanticDiagnostics, SemanticDiagnosticsBuilder};
-use crate::expr::compute::{
-    ComputationContext, ContextFunction, Environment, ExprAndId, compute_expr_semantic,
-};
+use crate::expr::compute::{ComputationContext, ExprAndId, compute_expr_semantic};
 use crate::expr::inference::conform::InferenceConform;
 use crate::expr::inference::{ConstVar, InferenceId};
 use crate::helper::ModuleHelper;
 use crate::items::enm::SemanticEnumEx;
+use crate::items::extern_function::ExternFunctionSemantic;
+use crate::items::free_function::FreeFunctionSemantic;
+use crate::items::function_with_body::FunctionWithBodySemantic;
+use crate::items::generics::GenericParamSemantic;
+use crate::items::imp::ImplSemantic;
+use crate::items::structure::StructSemantic;
+use crate::items::trt::TraitSemantic;
 use crate::resolve::{Resolver, ResolverData};
 use crate::substitution::{GenericSubstitution, SemanticRewriter};
 use crate::types::resolve_type;
@@ -50,87 +55,92 @@ use crate::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, DebugWithDb)]
-#[debug_db(dyn SemanticGroup + 'static)]
-pub struct Constant {
+#[debug_db(dyn Database)]
+pub struct Constant<'db> {
     /// The actual id of the const expression value.
     pub value: ExprId,
     /// The arena of all the expressions for the const calculation.
-    pub arenas: Arc<Arenas>,
+    pub arenas: Arc<Arenas<'db>>,
 }
 
-impl Constant {
-    pub fn ty(&self) -> TypeId {
+// TODO: Review this well.
+unsafe impl<'db> salsa::Update for Constant<'db> {
+    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
+        let old_constant: &mut Constant<'db> = unsafe { &mut *old_pointer };
+
+        if old_constant.value != new_value.value {
+            *old_constant = new_value;
+            return true;
+        }
+
+        false
+    }
+}
+
+impl<'db> Constant<'db> {
+    pub fn ty(&self) -> TypeId<'db> {
         self.arenas.exprs[self.value].ty()
     }
 }
 
 /// Information about a constant definition.
 ///
-/// Helper struct for the data returned by [SemanticGroup::priv_constant_semantic_data].
-#[derive(Clone, Debug, PartialEq, Eq, DebugWithDb)]
-#[debug_db(dyn SemanticGroup + 'static)]
-pub struct ConstantData {
-    pub diagnostics: Diagnostics<SemanticDiagnostic>,
-    pub constant: Maybe<Constant>,
-    pub const_value: ConstValueId,
-    pub resolver_data: Arc<ResolverData>,
+/// Helper struct for the data returned by [ConstantSemantic::constant_semantic_data].
+#[derive(Clone, Debug, PartialEq, Eq, DebugWithDb, salsa::Update)]
+#[debug_db(dyn Database)]
+pub struct ConstantData<'db> {
+    pub diagnostics: Diagnostics<'db, SemanticDiagnostic<'db>>,
+    pub constant: Maybe<Constant<'db>>,
+    pub const_value: ConstValueId<'db>,
+    pub resolver_data: Arc<ResolverData<'db>>,
 }
 
-define_short_id!(
-    ConstValueId,
-    ConstValue,
-    SemanticGroup,
-    lookup_intern_const_value,
-    intern_const_value
-);
-semantic_object_for_id!(ConstValueId, lookup_intern_const_value, intern_const_value, ConstValue);
-impl ConstValueId {
-    pub fn format(&self, db: &dyn SemanticGroup) -> String {
-        format!("{:?}", self.lookup_intern(db).debug(db.elongate()))
+define_short_id!(ConstValueId, ConstValue<'db>);
+semantic_object_for_id!(ConstValueId, ConstValue<'a>);
+impl<'db> ConstValueId<'db> {
+    pub fn format(&self, db: &dyn Database) -> String {
+        format!("{:?}", self.long(db).debug(db))
     }
 
     /// Returns true if the const does not depend on any generics.
-    pub fn is_fully_concrete(&self, db: &dyn SemanticGroup) -> bool {
-        self.lookup_intern(db).is_fully_concrete(db)
+    pub fn is_fully_concrete(&self, db: &dyn Database) -> bool {
+        self.long(db).is_fully_concrete(db)
     }
 
     /// Returns true if the const does not contain any inference variables.
-    pub fn is_var_free(&self, db: &dyn SemanticGroup) -> bool {
-        self.lookup_intern(db).is_var_free(db)
+    pub fn is_var_free(&self, db: &dyn Database) -> bool {
+        self.long(db).is_var_free(db)
     }
 
     /// Returns the type of the const.
-    pub fn ty(&self, db: &dyn SemanticGroup) -> Maybe<TypeId> {
-        self.lookup_intern(db).ty(db)
+    pub fn ty(&self, db: &'db dyn Database) -> Maybe<TypeId<'db>> {
+        self.long(db).ty(db)
     }
 }
 
 /// A constant value.
-#[derive(Clone, Debug, Hash, PartialEq, Eq, SemanticObject)]
-pub enum ConstValue {
-    Int(#[dont_rewrite] BigInt, TypeId),
-    Struct(Vec<ConstValue>, TypeId),
-    Enum(ConcreteVariant, Box<ConstValue>),
-    NonZero(Box<ConstValue>),
-    Boxed(Box<ConstValue>),
-    Generic(#[dont_rewrite] GenericParamId),
-    ImplConstant(ImplConstantId),
-    Var(ConstVar, TypeId),
+#[derive(Clone, Debug, Hash, PartialEq, Eq, SemanticObject, salsa::Update)]
+pub enum ConstValue<'db> {
+    Int(#[dont_rewrite] BigInt, TypeId<'db>),
+    Struct(Vec<ConstValueId<'db>>, TypeId<'db>),
+    Enum(ConcreteVariant<'db>, ConstValueId<'db>),
+    NonZero(ConstValueId<'db>),
+    Generic(#[dont_rewrite] GenericParamId<'db>),
+    ImplConstant(ImplConstantId<'db>),
+    Var(ConstVar<'db>, TypeId<'db>),
     /// A missing value, used in cases where the value is not known due to diagnostics.
     Missing(#[dont_rewrite] DiagnosticAdded),
 }
-impl ConstValue {
+impl<'db> ConstValue<'db> {
     /// Returns true if the const does not depend on any generics.
-    pub fn is_fully_concrete(&self, db: &dyn SemanticGroup) -> bool {
+    pub fn is_fully_concrete(&self, db: &dyn Database) -> bool {
         self.ty(db).unwrap().is_fully_concrete(db)
             && match self {
                 ConstValue::Int(_, _) => true,
                 ConstValue::Struct(members, _) => {
-                    members.iter().all(|member: &ConstValue| member.is_fully_concrete(db))
+                    members.iter().all(|member| member.is_fully_concrete(db))
                 }
-                ConstValue::Enum(_, value)
-                | ConstValue::NonZero(value)
-                | ConstValue::Boxed(value) => value.is_fully_concrete(db),
+                ConstValue::Enum(_, val) | ConstValue::NonZero(val) => val.is_fully_concrete(db),
                 ConstValue::Generic(_)
                 | ConstValue::Var(_, _)
                 | ConstValue::Missing(_)
@@ -139,23 +149,21 @@ impl ConstValue {
     }
 
     /// Returns true if the const does not contain any inference variables.
-    pub fn is_var_free(&self, db: &dyn SemanticGroup) -> bool {
+    pub fn is_var_free(&self, db: &dyn Database) -> bool {
         self.ty(db).unwrap().is_var_free(db)
             && match self {
                 ConstValue::Int(_, _) | ConstValue::Generic(_) | ConstValue::Missing(_) => true,
                 ConstValue::Struct(members, _) => {
                     members.iter().all(|member| member.is_var_free(db))
                 }
-                ConstValue::Enum(_, value)
-                | ConstValue::NonZero(value)
-                | ConstValue::Boxed(value) => value.is_var_free(db),
+                ConstValue::Enum(_, val) | ConstValue::NonZero(val) => val.is_var_free(db),
                 ConstValue::Var(_, _) => false,
                 ConstValue::ImplConstant(impl_constant) => impl_constant.impl_id().is_var_free(db),
             }
     }
 
     /// Returns the type of the const.
-    pub fn ty(&self, db: &dyn SemanticGroup) -> Maybe<TypeId> {
+    pub fn ty(&self, db: &'db dyn Database) -> Maybe<TypeId<'db>> {
         Ok(match self {
             ConstValue::Int(_, ty) => *ty,
             ConstValue::Struct(_, ty) => *ty,
@@ -163,7 +171,6 @@ impl ConstValue {
                 TypeLongId::Concrete(ConcreteTypeId::Enum(variant.concrete_enum_id)).intern(db)
             }
             ConstValue::NonZero(value) => core_nonzero_ty(db, value.ty(db)?),
-            ConstValue::Boxed(value) => core_box_ty(db, value.ty(db)?),
             ConstValue::Generic(param) => {
                 extract_matches!(db.generic_param_semantic(*param)?, GenericParam::Const).ty
             }
@@ -176,7 +183,7 @@ impl ConstValue {
     }
 
     /// Returns the value of an int const as a BigInt.
-    pub fn into_int(self) -> Option<BigInt> {
+    pub fn to_int(&self) -> Option<&BigInt> {
         match self {
             ConstValue::Int(value, _) => Some(value),
             _ => None,
@@ -185,61 +192,60 @@ impl ConstValue {
 }
 
 /// An impl item of kind const.
-#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, SemanticObject)]
-pub struct ImplConstantId {
+#[derive(Copy, Clone, Debug, Hash, PartialEq, Eq, SemanticObject, salsa::Update)]
+pub struct ImplConstantId<'db> {
     /// The impl the item const is in.
-    impl_id: ImplId,
+    impl_id: ImplId<'db>,
     /// The trait const this impl const "implements".
-    trait_constant_id: TraitConstantId,
+    trait_constant_id: TraitConstantId<'db>,
 }
 
-impl ImplConstantId {
+impl<'db> ImplConstantId<'db> {
     /// Creates a new impl constant id. For an impl constant of a concrete impl, asserts that the
     /// trait constant belongs to the same trait that the impl implements (panics if not).
     pub fn new(
-        impl_id: ImplId,
-        trait_constant_id: TraitConstantId,
-        db: &dyn SemanticGroup,
+        impl_id: ImplId<'db>,
+        trait_constant_id: TraitConstantId<'db>,
+        db: &dyn Database,
     ) -> Self {
-        if let ImplLongId::Concrete(concrete_impl) = impl_id.lookup_intern(db) {
+        if let ImplLongId::Concrete(concrete_impl) = impl_id.long(db) {
             let impl_def_id = concrete_impl.impl_def_id(db);
             assert_eq!(Ok(trait_constant_id.trait_id(db)), db.impl_def_trait(impl_def_id));
         }
 
         ImplConstantId { impl_id, trait_constant_id }
     }
-    pub fn impl_id(&self) -> ImplId {
+    pub fn impl_id(&self) -> ImplId<'db> {
         self.impl_id
     }
-    pub fn trait_constant_id(&self) -> TraitConstantId {
+    pub fn trait_constant_id(&self) -> TraitConstantId<'db> {
         self.trait_constant_id
     }
 
-    pub fn format(&self, db: &dyn SemanticGroup) -> SmolStr {
-        format!("{}::{}", self.impl_id.name(db), self.trait_constant_id.name(db)).into()
+    pub fn format(&self, db: &dyn Database) -> String {
+        format!("{}::{}", self.impl_id.name(db), self.trait_constant_id.name(db).long(db))
     }
 }
-impl DebugWithDb<dyn SemanticGroup> for ImplConstantId {
-    fn fmt(
-        &self,
-        f: &mut std::fmt::Formatter<'_>,
-        db: &(dyn SemanticGroup + 'static),
-    ) -> std::fmt::Result {
+impl<'db> DebugWithDb<'db> for ImplConstantId<'db> {
+    type Db = dyn Database;
+
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>, db: &'db dyn Database) -> std::fmt::Result {
         write!(f, "{}", self.format(db))
     }
 }
 
-/// Query implementation of [SemanticGroup::priv_constant_semantic_data].
-pub fn priv_constant_semantic_data(
-    db: &dyn SemanticGroup,
-    const_id: ConstantId,
+/// Returns the semantic data of a constant.
+#[salsa::tracked(returns(ref), cycle_result=constant_semantic_data_cycle)]
+fn constant_semantic_data<'db>(
+    db: &'db dyn Database,
+    const_id: ConstantId<'db>,
     in_cycle: bool,
-) -> Maybe<ConstantData> {
+) -> Maybe<ConstantData<'db>> {
     let lookup_item_id = LookupItemId::ModuleItem(ModuleItemId::Constant(const_id));
     if in_cycle {
         constant_semantic_data_cycle_helper(
             db,
-            &db.module_constant_by_id(const_id)?.to_maybe()?,
+            &db.module_constant_by_id(const_id)?,
             lookup_item_id,
             None,
             &const_id,
@@ -247,7 +253,7 @@ pub fn priv_constant_semantic_data(
     } else {
         constant_semantic_data_helper(
             db,
-            &db.module_constant_by_id(const_id)?.to_maybe()?,
+            &db.module_constant_by_id(const_id)?,
             lookup_item_id,
             None,
             &const_id,
@@ -255,29 +261,34 @@ pub fn priv_constant_semantic_data(
     }
 }
 
-/// Cycle handling for [SemanticGroup::priv_constant_semantic_data].
-pub fn priv_constant_semantic_data_cycle(
-    db: &dyn SemanticGroup,
-    _cycle: &salsa::Cycle,
-    const_id: &ConstantId,
-    _in_cycle: &bool,
-) -> Maybe<ConstantData> {
-    priv_constant_semantic_data(db, *const_id, true)
+/// Cycle handling for [ConstantSemantic::constant_semantic_data].
+fn constant_semantic_data_cycle<'db>(
+    db: &'db dyn Database,
+    const_id: ConstantId<'db>,
+    _in_cycle: bool,
+) -> Maybe<ConstantData<'db>> {
+    let lookup_item_id = LookupItemId::ModuleItem(ModuleItemId::Constant(const_id));
+    constant_semantic_data_cycle_helper(
+        db,
+        &db.module_constant_by_id(const_id)?,
+        lookup_item_id,
+        None,
+        &const_id,
+    )
 }
 
 /// Returns constant semantic data for the given ItemConstant.
-pub fn constant_semantic_data_helper(
-    db: &dyn SemanticGroup,
-    constant_ast: &ItemConstant,
-    lookup_item_id: LookupItemId,
-    parent_resolver_data: Option<Arc<ResolverData>>,
-    element_id: &impl LanguageElementId,
-) -> Maybe<ConstantData> {
-    let mut diagnostics: SemanticDiagnostics = SemanticDiagnostics::default();
+pub fn constant_semantic_data_helper<'db>(
+    db: &'db dyn Database,
+    constant_ast: &ItemConstant<'db>,
+    lookup_item_id: LookupItemId<'db>,
+    parent_resolver_data: Option<Arc<ResolverData<'db>>>,
+    element_id: &impl LanguageElementId<'db>,
+) -> Maybe<ConstantData<'db>> {
+    let mut diagnostics: SemanticDiagnostics<'_> = SemanticDiagnostics::default();
     // TODO(spapini): when code changes in a file, all the AST items change (as they contain a path
     // to the green root that changes. Once ASTs are rooted on items, use a selector that picks only
     // the item instead of all the module data.
-    let syntax_db = db;
 
     let inference_id = InferenceId::LookupItemDeclaration(lookup_item_id);
 
@@ -285,62 +296,42 @@ pub fn constant_semantic_data_helper(
         Some(parent_resolver_data) => {
             Resolver::with_data(db, parent_resolver_data.clone_with_inference_id(db, inference_id))
         }
-        None => Resolver::new(db, element_id.module_file_id(db), inference_id),
+        None => Resolver::new(db, element_id.module_id(db), inference_id),
     };
     resolver.set_feature_config(element_id, constant_ast, &mut diagnostics);
 
-    let constant_type = resolve_type(
-        db,
-        &mut diagnostics,
-        &mut resolver,
-        &constant_ast.type_clause(syntax_db).ty(syntax_db),
-    );
+    let constant_type =
+        resolve_type(db, &mut diagnostics, &mut resolver, &constant_ast.type_clause(db).ty(db));
 
-    let environment = Environment::empty();
-    let mut ctx = ComputationContext::new(
-        db,
-        &mut diagnostics,
-        resolver,
-        None,
-        environment,
-        ContextFunction::Global,
-    );
+    let mut ctx = ComputationContext::new_global(db, &mut diagnostics, &mut resolver);
 
-    let value = compute_expr_semantic(&mut ctx, &constant_ast.value(syntax_db));
+    let value = compute_expr_semantic(&mut ctx, &constant_ast.value(db));
     let const_value = resolve_const_expr_and_evaluate(
         db,
         &mut ctx,
         &value,
-        constant_ast.stable_ptr(syntax_db).untyped(),
+        constant_ast.stable_ptr(db).untyped(),
         constant_type,
         true,
-    )
-    .intern(db);
-
-    let const_value = ctx
-        .resolver
+    );
+    let constant = Ok(Constant { value: value.id, arenas: Arc::new(ctx.arenas) });
+    let const_value = resolver
         .inference()
         .rewrite(const_value)
         .unwrap_or_else(|_| ConstValue::Missing(skip_diagnostic()).intern(db));
-    let resolver_data = Arc::new(ctx.resolver.data);
-    let constant = Constant { value: value.id, arenas: Arc::new(ctx.arenas) };
-    Ok(ConstantData {
-        diagnostics: diagnostics.build(),
-        const_value,
-        constant: Ok(constant),
-        resolver_data,
-    })
+    let resolver_data = Arc::new(resolver.data);
+    Ok(ConstantData { diagnostics: diagnostics.build(), const_value, constant, resolver_data })
 }
 
 /// Helper for cycle handling of constants.
-pub fn constant_semantic_data_cycle_helper(
-    db: &dyn SemanticGroup,
-    constant_ast: &ItemConstant,
-    lookup_item_id: LookupItemId,
-    parent_resolver_data: Option<Arc<ResolverData>>,
-    element_id: &impl LanguageElementId,
-) -> Maybe<ConstantData> {
-    let mut diagnostics: SemanticDiagnostics = SemanticDiagnostics::default();
+pub fn constant_semantic_data_cycle_helper<'db>(
+    db: &'db dyn Database,
+    constant_ast: &ItemConstant<'db>,
+    lookup_item_id: LookupItemId<'db>,
+    parent_resolver_data: Option<Arc<ResolverData<'db>>>,
+    element_id: &impl LanguageElementId<'db>,
+) -> Maybe<ConstantData<'db>> {
+    let mut diagnostics: SemanticDiagnostics<'_> = SemanticDiagnostics::default();
 
     let inference_id = InferenceId::LookupItemDeclaration(lookup_item_id);
 
@@ -348,7 +339,7 @@ pub fn constant_semantic_data_cycle_helper(
         Some(parent_resolver_data) => {
             Resolver::with_data(db, parent_resolver_data.clone_with_inference_id(db, inference_id))
         }
-        None => Resolver::new(db, element_id.module_file_id(db), inference_id),
+        None => Resolver::new(db, element_id.module_id(db), inference_id),
     };
 
     let resolver_data = Arc::new(resolver.data);
@@ -364,7 +355,7 @@ pub fn constant_semantic_data_cycle_helper(
 }
 
 /// Checks if the given expression only involved constant calculations.
-pub fn validate_const_expr(ctx: &mut ComputationContext<'_>, expr_id: ExprId) {
+pub fn validate_const_expr<'db>(ctx: &mut ComputationContext<'db, '_>, expr_id: ExprId) {
     let info = ctx.db.const_calc_info();
     let mut eval_ctx = ConstantEvaluateContext {
         db: ctx.db,
@@ -379,16 +370,17 @@ pub fn validate_const_expr(ctx: &mut ComputationContext<'_>, expr_id: ExprId) {
 }
 
 /// Resolves the given const expression and evaluates its value.
-pub fn resolve_const_expr_and_evaluate(
-    db: &dyn SemanticGroup,
-    ctx: &mut ComputationContext<'_>,
-    value: &ExprAndId,
-    const_stable_ptr: SyntaxStablePtrId,
-    target_type: TypeId,
+pub fn resolve_const_expr_and_evaluate<'db, 'mt>(
+    db: &'db dyn Database,
+    ctx: &'mt mut ComputationContext<'db, '_>,
+    value: &ExprAndId<'db>,
+    const_stable_ptr: SyntaxStablePtrId<'db>,
+    target_type: TypeId<'db>,
     finalize: bool,
-) -> ConstValue {
+) -> ConstValueId<'db> {
     let prev_err_count = ctx.diagnostics.error_count;
-    let inference = &mut ctx.resolver.inference();
+    let mut_ref = &mut ctx.resolver;
+    let mut inference: crate::expr::inference::Inference<'db, '_> = mut_ref.inference();
     if let Err(err_set) = inference.conform_ty(value.ty(), target_type) {
         inference.report_on_pending_error(err_set, ctx.diagnostics, const_stable_ptr);
     }
@@ -405,9 +397,11 @@ pub fn resolve_const_expr_and_evaluate(
     ctx.apply_inference_rewriter_to_exprs();
 
     match &value.expr {
-        Expr::Constant(ExprConstant { const_value_id, .. }) => const_value_id.lookup_intern(db),
+        Expr::Constant(ExprConstant { const_value_id, .. }) => *const_value_id,
         // Check that the expression is a valid constant.
-        _ if ctx.diagnostics.error_count > prev_err_count => ConstValue::Missing(skip_diagnostic()),
+        _ if ctx.diagnostics.error_count > prev_err_count => {
+            ConstValue::Missing(skip_diagnostic()).intern(db)
+        }
         _ => {
             let info = db.const_calc_info();
             let mut eval_ctx = ConstantEvaluateContext {
@@ -421,7 +415,7 @@ pub fn resolve_const_expr_and_evaluate(
             };
             eval_ctx.validate(value.id);
             if eval_ctx.diagnostics.error_count > prev_err_count {
-                ConstValue::Missing(skip_diagnostic())
+                ConstValue::Missing(skip_diagnostic()).intern(db)
             } else {
                 eval_ctx.evaluate(value.id)
             }
@@ -430,47 +424,51 @@ pub fn resolve_const_expr_and_evaluate(
 }
 
 /// creates a [ConstValue] from a [BigInt] value.
-pub fn value_as_const_value(
-    db: &dyn SemanticGroup,
-    ty: TypeId,
+pub fn value_as_const_value<'db>(
+    db: &'db dyn Database,
+    ty: TypeId<'db>,
     value: &BigInt,
-) -> Result<ConstValue, LiteralError> {
+) -> Result<ConstValueId<'db>, LiteralError<'db>> {
     validate_literal(db, ty, value)?;
     let get_basic_const_value = |ty| {
-        let u256_ty = get_core_ty_by_name(db, "u256".into(), vec![]);
+        let u256_ty = get_core_ty_by_name(db, SmolStrId::from(db, "u256"), vec![]);
 
         if ty != u256_ty {
-            ConstValue::Int(value.clone(), ty)
+            ConstValue::Int(value.clone(), ty).intern(db)
         } else {
-            let u128_ty = get_core_ty_by_name(db, "u128".into(), vec![]);
+            let u128_ty = get_core_ty_by_name(db, SmolStrId::from(db, "u128"), vec![]);
             let mask128 = BigInt::from(u128::MAX);
             let low = value & mask128;
             let high = value >> 128;
             ConstValue::Struct(
-                vec![(ConstValue::Int(low, u128_ty)), (ConstValue::Int(high, u128_ty))],
+                vec![
+                    (ConstValue::Int(low, u128_ty).intern(db)),
+                    (ConstValue::Int(high, u128_ty).intern(db)),
+                ],
                 ty,
             )
+            .intern(db)
         }
     };
 
     if let Some(inner) = try_extract_nz_wrapped_type(db, ty) {
-        Ok(ConstValue::NonZero(Box::new(get_basic_const_value(inner))))
+        Ok(ConstValue::NonZero(get_basic_const_value(inner)).intern(db))
     } else {
         Ok(get_basic_const_value(ty))
     }
 }
 
 /// A context for evaluating constant expressions.
-struct ConstantEvaluateContext<'a> {
-    db: &'a dyn SemanticGroup,
-    info: &'a ConstCalcInfo,
-    arenas: &'a Arenas,
-    vars: OrderedHashMap<VarId, ConstValue>,
-    generic_substitution: GenericSubstitution,
+struct ConstantEvaluateContext<'a, 'r, 'mt> {
+    db: &'a dyn Database,
+    info: &'r ConstCalcInfo<'a>,
+    arenas: &'r Arenas<'a>,
+    vars: OrderedHashMap<VarId<'a>, ConstValueId<'a>>,
+    generic_substitution: GenericSubstitution<'a>,
     depth: usize,
-    diagnostics: &'a mut SemanticDiagnostics,
+    diagnostics: &'mt mut SemanticDiagnostics<'a>,
 }
-impl ConstantEvaluateContext<'_> {
+impl<'a, 'r, 'mt> ConstantEvaluateContext<'a, 'r, 'mt> {
     /// Validate the given expression can be used as constant.
     fn validate(&mut self, expr_id: ExprId) {
         match &self.arenas.exprs[expr_id] {
@@ -530,7 +528,7 @@ impl ConstantEvaluateContext<'_> {
                 }
             }
             Expr::StructCtor(ExprStructCtor { members, base_struct: None, .. }) => {
-                for (_, expr_id) in members {
+                for (expr_id, _) in members {
                     self.validate(*expr_id);
                 }
             }
@@ -579,7 +577,7 @@ impl ConstantEvaluateContext<'_> {
     }
 
     /// Returns true if the given function is allowed to be called in constant context.
-    fn is_function_const(&self, function_id: FunctionId) -> bool {
+    fn is_function_const(&self, function_id: FunctionId<'a>) -> bool {
         if function_id == self.panic_with_felt252 {
             return true;
         }
@@ -589,10 +587,10 @@ impl ConstantEvaluateContext<'_> {
             GenericFunctionId::Free(id) => db.free_function_signature(id),
             GenericFunctionId::Extern(id) => db.extern_function_signature(id),
             GenericFunctionId::Impl(id) => {
-                if let ImplLongId::Concrete(impl_id) = id.impl_id.lookup_intern(db) {
-                    if let Ok(Some(impl_function_id)) = impl_id.get_impl_function(db, id.function) {
-                        return self.db.impl_function_signature(impl_function_id);
-                    }
+                if let ImplLongId::Concrete(impl_id) = id.impl_id.long(db)
+                    && let Ok(Some(impl_function_id)) = impl_id.get_impl_function(db, id.function)
+                {
+                    return self.db.impl_function_signature(impl_function_id);
                 }
                 self.db.trait_function_signature(id.function)
             }
@@ -615,20 +613,21 @@ impl ConstantEvaluateContext<'_> {
     }
 
     /// Evaluate the given const expression value.
-    fn evaluate(&mut self, expr_id: ExprId) -> ConstValue {
+    fn evaluate<'ctx>(&'ctx mut self, expr_id: ExprId) -> ConstValueId<'a> {
         let expr = &self.arenas.exprs[expr_id];
         let db = self.db;
+        let to_missing = |diag_added| ConstValue::Missing(diag_added).intern(db);
         match expr {
-            Expr::Var(expr) => self.vars.get(&expr.var).cloned().unwrap_or_else(|| {
-                ConstValue::Missing(
+            Expr::Var(expr) => self.vars.get(&expr.var).copied().unwrap_or_else(|| {
+                to_missing(
                     self.diagnostics
                         .report(expr.stable_ptr, SemanticDiagnosticKind::UnsupportedConstant),
                 )
             }),
             Expr::Constant(expr) => self
                 .generic_substitution
-                .substitute(self.db, expr.const_value_id.lookup_intern(db))
-                .unwrap_or_else(ConstValue::Missing),
+                .substitute(self.db, expr.const_value_id)
+                .unwrap_or_else(to_missing),
             Expr::Block(ExprBlock { statements, tail: Some(inner), .. }) => {
                 for statement_id in statements {
                     match &self.arenas.statements[*statement_id] {
@@ -655,7 +654,8 @@ impl ConstantEvaluateContext<'_> {
             Expr::Tuple(expr) => ConstValue::Struct(
                 expr.items.iter().map(|expr_id| self.evaluate(*expr_id)).collect(),
                 expr.ty,
-            ),
+            )
+            .intern(db),
             Expr::StructCtor(ExprStructCtor {
                 members,
                 base_struct: None,
@@ -665,7 +665,7 @@ impl ConstantEvaluateContext<'_> {
             }) => {
                 let member_order = match db.concrete_struct_members(*concrete_struct_id) {
                     Ok(member_order) => member_order,
-                    Err(diag_add) => return ConstValue::Missing(diag_add),
+                    Err(diag_add) => return to_missing(diag_add),
                 };
                 ConstValue::Struct(
                     member_order
@@ -673,19 +673,20 @@ impl ConstantEvaluateContext<'_> {
                         .map(|m| {
                             members
                                 .iter()
-                                .find(|(member_id, _)| m.id == *member_id)
-                                .map(|(_, expr_id)| self.evaluate(*expr_id))
+                                .find(|(_, member_id)| m.id == *member_id)
+                                .map(|(expr_id, _)| self.evaluate(*expr_id))
                                 .expect("Should have been caught by semantic validation")
                         })
                         .collect(),
                     *ty,
                 )
+                .intern(db)
             }
             Expr::EnumVariantCtor(expr) => {
-                ConstValue::Enum(expr.variant, Box::new(self.evaluate(expr.value_expr)))
+                ConstValue::Enum(expr.variant, self.evaluate(expr.value_expr)).intern(db)
             }
             Expr::MemberAccess(expr) => {
-                self.evaluate_member_access(expr).unwrap_or_else(ConstValue::Missing)
+                self.evaluate_member_access(expr).unwrap_or_else(to_missing)
             }
             Expr::FixedSizeArray(expr) => ConstValue::Struct(
                 match &expr.items {
@@ -694,9 +695,8 @@ impl ConstantEvaluateContext<'_> {
                     }
                     crate::FixedSizeArrayItems::ValueAndSize(value, count) => {
                         let value = self.evaluate(*value);
-                        let count = count.lookup_intern(db);
-                        if let Some(count) = count.into_int() {
-                            (0..count.to_usize().unwrap()).map(|_| value.clone()).collect()
+                        if let Some(count) = count.long(db).to_int() {
+                            vec![value; count.to_usize().unwrap()]
                         } else {
                             self.diagnostics.report(
                                 expr.stable_ptr.untyped(),
@@ -707,25 +707,26 @@ impl ConstantEvaluateContext<'_> {
                     }
                 },
                 expr.ty,
-            ),
+            )
+            .intern(db),
             Expr::Snapshot(expr) => self.evaluate(expr.inner),
             Expr::Desnap(expr) => self.evaluate(expr.inner),
             Expr::LogicalOperator(expr) => {
                 let lhs = self.evaluate(expr.lhs);
-                if let ConstValue::Enum(v, _) = &lhs {
+                if let ConstValue::Enum(v, _) = lhs.long(db) {
                     let early_return_variant = match expr.op {
                         LogicalOperator::AndAnd => false_variant(self.db),
                         LogicalOperator::OrOr => true_variant(self.db),
                     };
                     if *v == early_return_variant { lhs } else { self.evaluate(expr.lhs) }
                 } else {
-                    ConstValue::Missing(skip_diagnostic())
+                    to_missing(skip_diagnostic())
                 }
             }
             Expr::Match(expr) => {
                 let value = self.evaluate(expr.matched_expr);
-                let ConstValue::Enum(variant, value) = value else {
-                    return ConstValue::Missing(skip_diagnostic());
+                let ConstValue::Enum(variant, value) = value.long(db) else {
+                    return to_missing(skip_diagnostic());
                 };
                 for arm in &expr.arms {
                     for pattern_id in &arm.patterns {
@@ -745,7 +746,7 @@ impl ConstantEvaluateContext<'_> {
                         return self.evaluate(arm.expression);
                     }
                 }
-                ConstValue::Missing(
+                to_missing(
                     self.diagnostics.report(
                         expr.stable_ptr.untyped(),
                         SemanticDiagnosticKind::UnsupportedConstant,
@@ -758,18 +759,18 @@ impl ConstantEvaluateContext<'_> {
                     match condition {
                         crate::Condition::BoolExpr(id) => {
                             let condition = self.evaluate(*id);
-                            let ConstValue::Enum(variant, _) = condition else {
-                                return ConstValue::Missing(skip_diagnostic());
+                            let ConstValue::Enum(variant, _) = condition.long(db) else {
+                                return to_missing(skip_diagnostic());
                             };
-                            if variant != true_variant(self.db) {
+                            if *variant != true_variant(self.db) {
                                 if_condition = false;
                                 break;
                             }
                         }
                         crate::Condition::Let(id, patterns) => {
                             let value = self.evaluate(*id);
-                            let ConstValue::Enum(variant, value) = value else {
-                                return ConstValue::Missing(skip_diagnostic());
+                            let ConstValue::Enum(variant, value) = value.long(db) else {
+                                return to_missing(skip_diagnostic());
                             };
                             let mut found_pattern = false;
                             for pattern_id in patterns {
@@ -778,7 +779,7 @@ impl ConstantEvaluateContext<'_> {
                                 else {
                                     continue;
                                 };
-                                if pattern.variant != variant {
+                                if pattern.variant != *variant {
                                     // Continue to the next option in the `|` list.
                                     continue;
                                 }
@@ -801,16 +802,17 @@ impl ConstantEvaluateContext<'_> {
                 } else if let Some(else_block) = expr.else_block {
                     self.evaluate(else_block)
                 } else {
-                    self.unit_const.clone()
+                    self.unit_const
                 }
             }
-            _ => ConstValue::Missing(skip_diagnostic()),
+            _ => to_missing(skip_diagnostic()),
         }
     }
 
     /// Attempts to evaluate constants from a const function call.
-    fn evaluate_function_call(&mut self, expr: &ExprFunctionCall) -> ConstValue {
+    fn evaluate_function_call(&mut self, expr: &ExprFunctionCall<'a>) -> ConstValueId<'a> {
         let db = self.db;
+        let to_missing = |diag_added| ConstValue::Missing(diag_added).intern(db);
         let args = expr
             .args
             .iter()
@@ -818,7 +820,7 @@ impl ConstantEvaluateContext<'_> {
             .map(|arg| self.evaluate(*arg))
             .collect_vec();
         if expr.function == self.panic_with_felt252 {
-            return ConstValue::Missing(self.diagnostics.report(
+            return to_missing(self.diagnostics.report(
                 expr.stable_ptr.untyped(),
                 SemanticDiagnosticKind::FailedConstantCalculation,
             ));
@@ -826,7 +828,7 @@ impl ConstantEvaluateContext<'_> {
         let concrete_function =
             match self.generic_substitution.substitute(db, expr.function.get_concrete(db)) {
                 Ok(v) => v,
-                Err(err) => return ConstValue::Missing(err),
+                Err(err) => return to_missing(err),
             };
         if let Some(calc_result) =
             self.evaluate_const_function_call(&concrete_function, &args, expr)
@@ -836,7 +838,7 @@ impl ConstantEvaluateContext<'_> {
 
         let imp = extract_matches!(concrete_function.generic_function, GenericFunctionId::Impl);
         let bool_value = |condition: bool| {
-            if condition { self.true_const.clone() } else { self.false_const.clone() }
+            if condition { self.true_const } else { self.false_const }
         };
 
         if imp.function == self.eq_fn {
@@ -855,7 +857,7 @@ impl ConstantEvaluateContext<'_> {
             Some(args) => args,
             // Diagnostic can be skipped as we would either have a semantic error for a bad arg for
             // the function, or the arg itself couldn't have been calculated.
-            None => return ConstValue::Missing(skip_diagnostic()),
+            None => return to_missing(skip_diagnostic()),
         };
         let mut value = match imp.function {
             id if id == self.neg_fn => -&args[0].v,
@@ -863,7 +865,7 @@ impl ConstantEvaluateContext<'_> {
             id if id == self.sub_fn => &args[0].v - &args[1].v,
             id if id == self.mul_fn => &args[0].v * &args[1].v,
             id if (id == self.div_fn || id == self.rem_fn) && args[1].v.is_zero() => {
-                return ConstValue::Missing(
+                return to_missing(
                     self.diagnostics
                         .report(expr.stable_ptr.untyped(), SemanticDiagnosticKind::DivisionByZero),
                 );
@@ -886,7 +888,8 @@ impl ConstantEvaluateContext<'_> {
                         value_as_const_value(db, args[0].ty, &(&args[0].v % &args[1].v)).unwrap(),
                     ],
                     expr.ty,
-                );
+                )
+                .intern(db);
             }
             _ => {
                 unreachable!("Unexpected function call in constant lowering: {:?}", expr)
@@ -905,48 +908,82 @@ impl ConstantEvaluateContext<'_> {
                 self.diagnostics
                     .report(expr.stable_ptr.untyped(), SemanticDiagnosticKind::LiteralError(err))
             })
-            .unwrap_or_else(ConstValue::Missing)
+            .unwrap_or_else(to_missing)
     }
 
     /// Attempts to evaluate a constant function call.
     fn evaluate_const_function_call(
         &mut self,
-        concrete_function: &ConcreteFunction,
-        args: &[ConstValue],
-        expr: &ExprFunctionCall,
-    ) -> Option<ConstValue> {
+        concrete_function: &ConcreteFunction<'a>,
+        args: &[ConstValueId<'a>],
+        expr: &ExprFunctionCall<'a>,
+    ) -> Option<ConstValueId<'a>> {
         let db = self.db;
         if let GenericFunctionId::Extern(extern_fn) = concrete_function.generic_function {
             let expr_ty = self.generic_substitution.substitute(db, expr.ty).ok()?;
             if self.upcast_fns.contains(&extern_fn) {
-                let [ConstValue::Int(value, _)] = args else { return None };
-                return Some(ConstValue::Int(value.clone(), expr_ty));
+                let [arg] = args else { return None };
+                return Some(ConstValue::Int(arg.long(db).to_int()?.clone(), expr_ty).intern(db));
             } else if self.unwrap_non_zero == extern_fn {
-                let [ConstValue::NonZero(value)] = args else { return None };
-                return Some(value.as_ref().clone());
+                let [arg] = args else { return None };
+                return try_extract_matches!(arg.long(db), ConstValue::NonZero).copied();
             } else if let Some(reversed) = self.downcast_fns.get(&extern_fn) {
-                let [ConstValue::Int(value, _)] = args else { return None };
-                let TypeLongId::Concrete(ConcreteTypeId::Enum(enm)) = expr_ty.lookup_intern(db)
-                else {
+                let [arg] = args else { return None };
+                let value = arg.long(db).to_int()?;
+                let TypeLongId::Concrete(ConcreteTypeId::Enum(enm)) = expr_ty.long(db) else {
                     return None;
                 };
                 let (variant0, variant1) =
-                    db.concrete_enum_variants(enm).ok()?.into_iter().collect_tuple()?;
+                    db.concrete_enum_variants(*enm).ok()?.into_iter().collect_tuple()?;
                 let (some, none) =
                     if *reversed { (variant1, variant0) } else { (variant0, variant1) };
                 let success_ty = some.ty;
                 return Some(match validate_literal(db, success_ty, value) {
-                    Ok(()) => {
-                        ConstValue::Enum(some, ConstValue::Int(value.clone(), success_ty).into())
-                    }
+                    Ok(()) => ConstValue::Enum(
+                        some,
+                        ConstValue::Int(value.clone(), success_ty).intern(db),
+                    )
+                    .intern(db),
                     Err(LiteralError::OutOfRange(_)) => {
-                        ConstValue::Enum(none, self.unit_const.clone().into())
+                        ConstValue::Enum(none, self.unit_const).intern(db)
                     }
                     Err(LiteralError::InvalidTypeForLiteral(_)) => unreachable!(
                         "`downcast` is only allowed into types that can be literals. Got `{}`.",
                         success_ty.format(db)
                     ),
                 });
+            } else if self.nz_fns.contains(&extern_fn) {
+                let [arg] = args else { return None };
+                let (ty, is_zero) = match arg.long(db) {
+                    ConstValue::Int(val, ty) => (ty, val.is_zero()),
+                    ConstValue::Struct(members, ty) => (
+                        ty,
+                        // For u256 struct with (low, high), check if both are zero
+                        members.iter().all(|member| match member.long(db) {
+                            ConstValue::Int(val, _) => val.is_zero(),
+                            _ => false,
+                        }),
+                    ),
+                    _ => unreachable!(
+                        "`is_zero` is only allowed for integers got `{}`",
+                        arg.ty(db).unwrap().format(db)
+                    ),
+                };
+
+                return Some(
+                    if is_zero {
+                        ConstValue::Enum(
+                            crate::corelib::jump_nz_zero_variant(db, *ty),
+                            self.unit_const,
+                        )
+                    } else {
+                        ConstValue::Enum(
+                            crate::corelib::jump_nz_nonzero_variant(db, *ty),
+                            ConstValue::NonZero(*arg).intern(db),
+                        )
+                    }
+                    .intern(db),
+                );
             } else {
                 unreachable!(
                     "Unexpected extern function in constant lowering: `{}`",
@@ -962,10 +999,13 @@ impl ConstantEvaluateContext<'_> {
         let body = db.function_body(concrete_body_id).ok()?;
         const MAX_CONST_EVAL_DEPTH: usize = 100;
         if self.depth > MAX_CONST_EVAL_DEPTH {
-            return Some(ConstValue::Missing(self.diagnostics.report(
-                expr.stable_ptr,
-                SemanticDiagnosticKind::ConstantCalculationDepthExceeded,
-            )));
+            return Some(
+                ConstValue::Missing(self.diagnostics.report(
+                    expr.stable_ptr,
+                    SemanticDiagnosticKind::ConstantCalculationDepthExceeded,
+                ))
+                .intern(db),
+            );
         }
         let mut diagnostics = SemanticDiagnostics::default();
         let mut inner = ConstantEvaluateContext {
@@ -974,7 +1014,7 @@ impl ConstantEvaluateContext<'_> {
             arenas: &body.arenas,
             vars: signature
                 .params
-                .into_iter()
+                .iter()
                 .map(|p| VarId::Param(p.id))
                 .zip(args.iter().cloned())
                 .collect(),
@@ -984,7 +1024,7 @@ impl ConstantEvaluateContext<'_> {
         };
         let value = inner.evaluate(body.body_expr);
         for diagnostic in diagnostics.build().get_all() {
-            let location = diagnostic.location(db.elongate());
+            let location = diagnostic.location(db);
             let (inner_diag, mut notes) = match diagnostic.kind {
                 SemanticDiagnosticKind::ConstantCalculationDepthExceeded => {
                     self.diagnostics.report(
@@ -1011,9 +1051,9 @@ impl ConstantEvaluateContext<'_> {
     }
 
     /// Extract const member access from a const value.
-    fn evaluate_member_access(&mut self, expr: &ExprMemberAccess) -> Maybe<ConstValue> {
+    fn evaluate_member_access(&mut self, expr: &ExprMemberAccess<'a>) -> Maybe<ConstValueId<'a>> {
         let full_struct = self.evaluate(expr.expr);
-        let ConstValue::Struct(mut values, _) = full_struct else {
+        let ConstValue::Struct(values, _) = full_struct.long(self.db) else {
             // A semantic diagnostic should have been reported.
             return Err(skip_diagnostic());
         };
@@ -1023,12 +1063,13 @@ impl ConstantEvaluateContext<'_> {
             // A semantic diagnostic should have been reported.
             return Err(skip_diagnostic());
         };
-        Ok(values.swap_remove(member_idx))
+        Ok(values[member_idx])
     }
 
     /// Destructures the pattern into the const value of the variables in scope.
-    fn destructure_pattern(&mut self, pattern_id: PatternId, value: ConstValue) {
+    fn destructure_pattern(&mut self, pattern_id: PatternId, value: ConstValueId<'a>) {
         let pattern = &self.arenas.patterns[pattern_id];
+        let db = self.db;
         match pattern {
             Pattern::Literal(_)
             | Pattern::StringLiteral(_)
@@ -1038,198 +1079,135 @@ impl ConstantEvaluateContext<'_> {
                 self.vars.insert(VarId::Local(pattern.var.id), value);
             }
             Pattern::Struct(pattern) => {
-                if let ConstValue::Struct(inner_values, _) = value {
-                    let member_order =
-                        match self.db.concrete_struct_members(pattern.concrete_struct_id) {
-                            Ok(member_order) => member_order,
-                            Err(_) => return,
-                        };
+                if let ConstValue::Struct(inner_values, _) = value.long(db) {
+                    let member_order = match db.concrete_struct_members(pattern.concrete_struct_id)
+                    {
+                        Ok(member_order) => member_order,
+                        Err(_) => return,
+                    };
                     for (member, inner_value) in zip(member_order.values(), inner_values) {
-                        if let Some((_, inner_pattern)) =
-                            pattern.field_patterns.iter().find(|(field, _)| member.id == field.id)
+                        if let Some((inner_pattern, _)) =
+                            pattern.field_patterns.iter().find(|(_, field)| member.id == field.id)
                         {
-                            self.destructure_pattern(*inner_pattern, inner_value);
+                            self.destructure_pattern(*inner_pattern, *inner_value);
                         }
                     }
                 }
             }
             Pattern::Tuple(pattern) => {
-                if let ConstValue::Struct(inner_values, _) = value {
+                if let ConstValue::Struct(inner_values, _) = value.long(db) {
                     for (inner_pattern, inner_value) in zip(&pattern.field_patterns, inner_values) {
-                        self.destructure_pattern(*inner_pattern, inner_value);
+                        self.destructure_pattern(*inner_pattern, *inner_value);
                     }
                 }
             }
             Pattern::FixedSizeArray(pattern) => {
-                if let ConstValue::Struct(inner_values, _) = value {
+                if let ConstValue::Struct(inner_values, _) = value.long(db) {
                     for (inner_pattern, inner_value) in
                         zip(&pattern.elements_patterns, inner_values)
                     {
-                        self.destructure_pattern(*inner_pattern, inner_value);
+                        self.destructure_pattern(*inner_pattern, *inner_value);
                     }
                 }
             }
             Pattern::EnumVariant(pattern) => {
-                if let ConstValue::Enum(variant, inner_value) = value {
-                    if pattern.variant == variant {
-                        if let Some(inner_pattern) = pattern.inner_pattern {
-                            self.destructure_pattern(inner_pattern, *inner_value);
-                        }
-                    }
+                if let ConstValue::Enum(variant, inner_value) = value.long(db)
+                    && pattern.variant == *variant
+                    && let Some(inner_pattern) = pattern.inner_pattern
+                {
+                    self.destructure_pattern(inner_pattern, *inner_value);
                 }
             }
         }
     }
 }
 
-impl std::ops::Deref for ConstantEvaluateContext<'_> {
-    type Target = ConstCalcInfo;
+impl<'db, 'r> std::ops::Deref for ConstantEvaluateContext<'db, 'r, '_> {
+    type Target = ConstCalcInfo<'db>;
     fn deref(&self) -> &Self::Target {
         self.info
     }
 }
 
 /// Helper for the arguments info.
-struct NumericArg {
+struct NumericArg<'db> {
     /// The arg's integer value.
     v: BigInt,
     /// The arg's type.
-    ty: TypeId,
+    ty: TypeId<'db>,
 }
-impl NumericArg {
-    fn try_new(db: &dyn SemanticGroup, arg: ConstValue) -> Option<Self> {
-        Some(Self { ty: arg.ty(db).ok()?, v: numeric_arg_value(arg)? })
+impl<'db> NumericArg<'db> {
+    fn try_new(db: &'db dyn Database, arg: ConstValueId<'db>) -> Option<Self> {
+        Some(Self { ty: arg.ty(db).ok()?, v: numeric_arg_value(db, arg)? })
     }
 }
 
 /// Helper for creating a `NumericArg` value.
 /// This includes unwrapping of `NonZero` values and struct of 2 values as a `u256`.
-fn numeric_arg_value(value: ConstValue) -> Option<BigInt> {
-    match value {
-        ConstValue::Int(value, _) => Some(value),
+fn numeric_arg_value<'db>(db: &'db dyn Database, value: ConstValueId<'db>) -> Option<BigInt> {
+    match value.long(db) {
+        ConstValue::Int(value, _) => Some(value.clone()),
         ConstValue::Struct(v, _) => {
-            if let [ConstValue::Int(low, _), ConstValue::Int(high, _)] = &v[..] {
-                Some(low + (high << 128))
+            if let [low, high] = &v[..] {
+                Some(low.long(db).to_int()? + (high.long(db).to_int()? << 128))
             } else {
                 None
             }
         }
-        ConstValue::NonZero(const_value) => numeric_arg_value(*const_value),
+        ConstValue::NonZero(const_value) => numeric_arg_value(db, *const_value),
         _ => None,
     }
 }
 
-/// Query implementation of [SemanticGroup::constant_semantic_diagnostics].
-pub fn constant_semantic_diagnostics(
-    db: &dyn SemanticGroup,
-    const_id: ConstantId,
-) -> Diagnostics<SemanticDiagnostic> {
-    db.priv_constant_semantic_data(const_id, false).map(|data| data.diagnostics).unwrap_or_default()
-}
-
-/// Query implementation of [SemanticGroup::constant_semantic_data].
-pub fn constant_semantic_data(db: &dyn SemanticGroup, const_id: ConstantId) -> Maybe<Constant> {
-    db.priv_constant_semantic_data(const_id, false)?.constant
-}
-
-/// Cycle handling for [SemanticGroup::constant_semantic_data].
-pub fn constant_semantic_data_cycle(
-    db: &dyn SemanticGroup,
-    _cycle: &salsa::Cycle,
-    const_id: &ConstantId,
-) -> Maybe<Constant> {
-    // Forwarding cycle handling to `priv_constant_semantic_data` handler.
-    db.priv_constant_semantic_data(*const_id, true)?.constant
-}
-
-/// Query implementation of [crate::db::SemanticGroup::constant_resolver_data].
-pub fn constant_resolver_data(
-    db: &dyn SemanticGroup,
-    const_id: ConstantId,
-) -> Maybe<Arc<ResolverData>> {
-    Ok(db.priv_constant_semantic_data(const_id, false)?.resolver_data)
-}
-
-/// Cycle handling for [crate::db::SemanticGroup::constant_resolver_data].
-pub fn constant_resolver_data_cycle(
-    db: &dyn SemanticGroup,
-    _cycle: &salsa::Cycle,
-    const_id: &ConstantId,
-) -> Maybe<Arc<ResolverData>> {
-    Ok(db.priv_constant_semantic_data(*const_id, true)?.resolver_data)
-}
-
-/// Query implementation of [crate::db::SemanticGroup::constant_const_value].
-pub fn constant_const_value(db: &dyn SemanticGroup, const_id: ConstantId) -> Maybe<ConstValueId> {
-    Ok(db.priv_constant_semantic_data(const_id, false)?.const_value)
-}
-
-/// Cycle handling for [crate::db::SemanticGroup::constant_const_value].
-pub fn constant_const_value_cycle(
-    db: &dyn SemanticGroup,
-    _cycle: &salsa::Cycle,
-    const_id: &ConstantId,
-) -> Maybe<ConstValueId> {
-    // Forwarding cycle handling to `priv_constant_semantic_data` handler.
-    Ok(db.priv_constant_semantic_data(*const_id, true)?.const_value)
-}
-
-/// Query implementation of [crate::db::SemanticGroup::constant_const_type].
-pub fn constant_const_type(db: &dyn SemanticGroup, const_id: ConstantId) -> Maybe<TypeId> {
-    db.priv_constant_semantic_data(const_id, false)?.const_value.ty(db)
-}
-
-/// Cycle handling for [crate::db::SemanticGroup::constant_const_type].
-pub fn constant_const_type_cycle(
-    db: &dyn SemanticGroup,
-    _cycle: &salsa::Cycle,
-    const_id: &ConstantId,
-) -> Maybe<TypeId> {
-    // Forwarding cycle handling to `priv_constant_semantic_data` handler.
-    db.priv_constant_semantic_data(*const_id, true)?.const_value.ty(db)
-}
-
-/// Query implementation of [crate::db::SemanticGroup::const_calc_info].
-pub fn const_calc_info(db: &dyn SemanticGroup) -> Arc<ConstCalcInfo> {
+/// Query implementation of [ConstantSemantic::const_calc_info].
+fn const_calc_info<'db>(db: &'db dyn Database) -> Arc<ConstCalcInfo<'db>> {
     Arc::new(ConstCalcInfo::new(db))
 }
 
-/// Holds static information about extern functions required for const calculations.
-#[derive(Debug, PartialEq, Eq)]
-pub struct ConstCalcInfo {
-    /// Traits that are allowed for consts if their impls is in the corelib.
-    const_traits: UnorderedHashSet<TraitId>,
-    /// The const value for the unit type `()`.
-    unit_const: ConstValue,
-    /// The const value for `true`.
-    true_const: ConstValue,
-    /// The const value for `false`.
-    false_const: ConstValue,
-    /// The function for panicking with a felt252.
-    panic_with_felt252: FunctionId,
-    /// The integer `upcast` style functions.
-    pub upcast_fns: UnorderedHashSet<ExternFunctionId>,
-    /// The integer `downcast` style functions, mapping to whether it returns a reversed Option
-    /// enum.
-    pub downcast_fns: UnorderedHashMap<ExternFunctionId, bool>,
-    /// The `unwrap_non_zero` function.
-    unwrap_non_zero: ExternFunctionId,
-
-    core_info: Arc<CoreInfo>,
+/// Implementation of [ConstantSemantic::const_calc_info].
+#[salsa::tracked]
+fn const_calc_info_tracked<'db>(db: &'db dyn Database) -> Arc<ConstCalcInfo<'db>> {
+    const_calc_info(db)
 }
 
-impl std::ops::Deref for ConstCalcInfo {
-    type Target = CoreInfo;
-    fn deref(&self) -> &CoreInfo {
+/// Holds static information about extern functions required for const calculations.
+#[derive(Debug, PartialEq, Eq, salsa::Update)]
+pub struct ConstCalcInfo<'db> {
+    /// Traits that are allowed for consts if their impls is in the corelib.
+    const_traits: UnorderedHashSet<TraitId<'db>>,
+    /// The const value for the unit type `()`.
+    unit_const: ConstValueId<'db>,
+    /// The const value for `true`.
+    true_const: ConstValueId<'db>,
+    /// The const value for `false`.
+    false_const: ConstValueId<'db>,
+    /// The function for panicking with a felt252.
+    panic_with_felt252: FunctionId<'db>,
+    /// The integer `upcast` style functions.
+    pub upcast_fns: UnorderedHashSet<ExternFunctionId<'db>>,
+    /// The integer `downcast` style functions, mapping to whether it returns a reversed Option
+    /// enum.
+    pub downcast_fns: UnorderedHashMap<ExternFunctionId<'db>, bool>,
+    /// The `unwrap_non_zero` function.
+    unwrap_non_zero: ExternFunctionId<'db>,
+    /// The `is_zero` style functions.
+    pub nz_fns: UnorderedHashSet<ExternFunctionId<'db>>,
+
+    core_info: Arc<CoreInfo<'db>>,
+}
+
+impl<'db> std::ops::Deref for ConstCalcInfo<'db> {
+    type Target = CoreInfo<'db>;
+    fn deref(&self) -> &CoreInfo<'db> {
         &self.core_info
     }
 }
 
-impl ConstCalcInfo {
+impl<'db> ConstCalcInfo<'db> {
     /// Creates a new ConstCalcInfo.
-    fn new(db: &dyn SemanticGroup) -> Self {
+    fn new(db: &'db dyn Database) -> Self {
         let core_info = db.core_info();
-        let unit_const = ConstValue::Struct(vec![], unit_ty(db));
+        let unit_const = ConstValue::Struct(vec![], unit_ty(db)).intern(db);
         let core = ModuleHelper::core(db);
         let bounded_int = core.submodule("internal").submodule("bounded_int");
         let integer = core.submodule("integer");
@@ -1253,8 +1231,8 @@ impl ConstCalcInfo {
                 core_info.partialord_trt,
                 core_info.not_trt,
             ]),
-            true_const: ConstValue::Enum(true_variant(db), unit_const.clone().into()),
-            false_const: ConstValue::Enum(false_variant(db), unit_const.clone().into()),
+            true_const: ConstValue::Enum(true_variant(db), unit_const).intern(db),
+            false_const: ConstValue::Enum(false_variant(db), unit_const).intern(db),
             unit_const,
             panic_with_felt252: core.function_id("panic_with_felt252", vec![]),
             upcast_fns: FromIterator::from_iter([
@@ -1292,7 +1270,52 @@ impl ConstCalcInfo {
                 ),
             ]),
             unwrap_non_zero: zeroable.extern_function_id("unwrap_non_zero"),
+            nz_fns: FromIterator::from_iter([
+                core.extern_function_id("felt252_is_zero"),
+                bounded_int.extern_function_id("bounded_int_is_zero"),
+                integer.extern_function_id("u8_is_zero"),
+                integer.extern_function_id("u16_is_zero"),
+                integer.extern_function_id("u32_is_zero"),
+                integer.extern_function_id("u64_is_zero"),
+                integer.extern_function_id("u128_is_zero"),
+                integer.extern_function_id("u256_is_zero"),
+            ]),
             core_info,
         }
     }
 }
+
+/// Trait for constant-related semantic queries.
+pub trait ConstantSemantic<'db>: Database {
+    /// Returns the semantic diagnostics of a constant definition.
+    fn constant_semantic_diagnostics(
+        &'db self,
+        const_id: ConstantId<'db>,
+    ) -> Diagnostics<'db, SemanticDiagnostic<'db>> {
+        let db = self.as_dyn_database();
+        constant_semantic_data(db, const_id, false)
+            .as_ref()
+            .map(|data| data.diagnostics.clone())
+            .unwrap_or_default()
+    }
+    /// Returns the semantic data of a constant definition.
+    fn constant_semantic_data(&'db self, use_id: ConstantId<'db>) -> Maybe<Constant<'db>> {
+        let db = self.as_dyn_database();
+        constant_semantic_data(db, use_id, false).maybe_as_ref()?.constant.clone()
+    }
+    /// Returns the resolver data of a constant definition.
+    fn constant_resolver_data(&'db self, use_id: ConstantId<'db>) -> Maybe<Arc<ResolverData<'db>>> {
+        let db = self.as_dyn_database();
+        Ok(constant_semantic_data(db, use_id, false).maybe_as_ref()?.resolver_data.clone())
+    }
+    /// Returns the const value of a constant definition.
+    fn constant_const_value(&'db self, const_id: ConstantId<'db>) -> Maybe<ConstValueId<'db>> {
+        let db = self.as_dyn_database();
+        Ok(constant_semantic_data(db, const_id, false).maybe_as_ref()?.const_value)
+    }
+    /// Returns information required for const calculations.
+    fn const_calc_info(&'db self) -> Arc<ConstCalcInfo<'db>> {
+        const_calc_info_tracked(self.as_dyn_database())
+    }
+}
+impl<'db, T: Database + ?Sized> ConstantSemantic<'db> for T {}

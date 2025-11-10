@@ -19,6 +19,7 @@ use lowering::borrow_check::Demand;
 use lowering::borrow_check::analysis::{Analyzer, BackAnalysis, StatementLocation};
 use lowering::borrow_check::demand::DemandReporter;
 use lowering::{Lowered, MatchInfo, Statement, VarRemapping, VarUsage};
+use salsa::Database;
 
 use crate::ap_tracking::{ApTrackingConfiguration, get_ap_tracking_configuration};
 use crate::db::SierraGenGroup;
@@ -40,9 +41,9 @@ pub struct AnalyzeApChangesResult {
 
 /// Does ap change related analysis for a given function.
 /// See [AnalyzeApChangesResult].
-pub fn analyze_ap_changes(
-    db: &dyn SierraGenGroup,
-    lowered_function: &Lowered,
+pub fn analyze_ap_changes<'db>(
+    db: &dyn Database,
+    lowered_function: &Lowered<'db>,
 ) -> Maybe<AnalyzeApChangesResult> {
     lowered_function.blocks.has_root()?;
     let ctx = FindLocalsContext {
@@ -55,7 +56,7 @@ pub fn analyze_ap_changes(
             lowered_function.parameters.iter().cloned(),
             // All empty variables are not ap based.
             lowered_function.variables.iter().filter_map(|(id, var)| {
-                let info = db.get_type_info(db.get_concrete_type_id(var.ty).ok()?).ok()?;
+                let info = db.get_type_info(db.get_concrete_type_id(var.ty).ok()?.clone()).ok()?;
                 if info.zero_sized { Some(id) } else { None }
             })
         )),
@@ -115,9 +116,9 @@ struct CalledBlockInfo {
 }
 
 /// Context for the find_local_variables logic.
-struct FindLocalsContext<'a> {
-    db: &'a dyn SierraGenGroup,
-    lowered_function: &'a Lowered,
+struct FindLocalsContext<'db, 'a> {
+    db: &'db dyn Database,
+    lowered_function: &'a Lowered<'db>,
     used_after_revoke: OrderedHashSet<VariableId>,
     block_callers: OrderedHashMap<BlockId, CalledBlockInfo>,
     /// Variables that are known not to be ap based, excluding constants.
@@ -137,18 +138,18 @@ struct AnalysisInfo {
     demand: LoweredDemand,
     known_ap_change: bool,
 }
-impl DemandReporter<VariableId> for FindLocalsContext<'_> {
+impl<'db> DemandReporter<VariableId> for FindLocalsContext<'db, '_> {
     type UsePosition = ();
     type IntroducePosition = ();
 }
-impl Analyzer<'_> for FindLocalsContext<'_> {
+impl<'db> Analyzer<'db, '_> for FindLocalsContext<'db, '_> {
     type Info = Maybe<AnalysisInfo>;
 
     fn visit_stmt(
         &mut self,
         info: &mut Self::Info,
         _statement_location: StatementLocation,
-        stmt: &Statement,
+        stmt: &Statement<'db>,
     ) {
         let Ok(info) = info else {
             return;
@@ -167,7 +168,7 @@ impl Analyzer<'_> for FindLocalsContext<'_> {
         info: &mut Self::Info,
         _statement_location: StatementLocation,
         target_block_id: BlockId,
-        remapping: &VarRemapping,
+        remapping: &VarRemapping<'db>,
     ) {
         let Ok(info) = info else {
             return;
@@ -191,7 +192,7 @@ impl Analyzer<'_> for FindLocalsContext<'_> {
     fn merge_match(
         &mut self,
         _statement_location: StatementLocation,
-        match_info: &MatchInfo,
+        match_info: &MatchInfo<'db>,
         infos: impl Iterator<Item = Self::Info>,
     ) -> Maybe<AnalysisInfo> {
         let mut arm_demands = vec![];
@@ -201,13 +202,13 @@ impl Analyzer<'_> for FindLocalsContext<'_> {
         // Revoke if needed.
         let libfunc_signature = self.get_match_libfunc_signature(match_info)?;
         for (arm, (info, branch_signature)) in
-            zip_eq(match_info.arms(), zip_eq(infos, libfunc_signature.branch_signatures))
+            zip_eq(match_info.arms(), zip_eq(infos, &libfunc_signature.branch_signatures))
         {
             let mut info = info?;
             info.demand.variables_introduced(self, &arm.var_ids, ());
             let branch_info = self.analyze_branch(
                 &libfunc_signature.param_signatures,
-                &branch_signature,
+                branch_signature,
                 inputs,
                 &arm.var_ids,
             );
@@ -226,7 +227,7 @@ impl Analyzer<'_> for FindLocalsContext<'_> {
     fn info_from_return(
         &mut self,
         _statement_location: StatementLocation,
-        vars: &[VarUsage],
+        vars: &[VarUsage<'db>],
     ) -> Self::Info {
         let mut demand = LoweredDemand::default();
         demand.variables_used(self, vars.iter().map(|VarUsage { var_id, .. }| (var_id, ())));
@@ -238,7 +239,7 @@ struct BranchInfo {
     known_ap_change: bool,
 }
 
-impl<'a> FindLocalsContext<'a> {
+impl<'db, 'a> FindLocalsContext<'db, 'a> {
     /// Given a variable that might be an alias follow aliases until we get the original variable.
     pub fn peel_aliases(&'a self, mut var: &'a VariableId) -> &'a VariableId {
         while let Some(alias) = self.aliases.get(var) {
@@ -279,10 +280,10 @@ impl<'a> FindLocalsContext<'a> {
     fn analyze_call(
         &mut self,
         concrete_function_id: cairo_lang_sierra::ids::ConcreteLibfuncId,
-        input_vars: &[VarUsage],
+        input_vars: &[VarUsage<'db>],
         output_vars: &[VariableId],
     ) -> BranchInfo {
-        let libfunc_signature = get_libfunc_signature(self.db, concrete_function_id.clone());
+        let libfunc_signature = get_libfunc_signature(self.db, &concrete_function_id);
         assert_eq!(
             libfunc_signature.branch_signatures.len(),
             1,
@@ -301,7 +302,7 @@ impl<'a> FindLocalsContext<'a> {
         &mut self,
         _params_signatures: &[ParamSignature],
         branch_signature: &BranchSignature,
-        input_vars: &[VarUsage],
+        input_vars: &[VarUsage<'db>],
         output_vars: &[VariableId],
     ) -> BranchInfo {
         let var_output_infos = &branch_signature.vars;
@@ -332,18 +333,20 @@ impl<'a> FindLocalsContext<'a> {
         BranchInfo { known_ap_change }
     }
 
-    fn analyze_statement(&mut self, statement: &Statement) -> Maybe<BranchInfo> {
+    fn analyze_statement(&mut self, statement: &Statement<'db>) -> Maybe<BranchInfo> {
         let inputs = statement.inputs();
         let outputs = statement.outputs();
         let branch_info = match statement {
             lowering::Statement::Const(statement_literal) => {
-                if matches!(
-                    statement_literal.value,
-                    ConstValue::Int(..)
-                        | ConstValue::Struct(..)
-                        | ConstValue::Enum(..)
-                        | ConstValue::NonZero(..)
-                ) {
+                if !statement_literal.boxed
+                    && matches!(
+                        statement_literal.value.long(self.db),
+                        ConstValue::Int(..)
+                            | ConstValue::Struct(..)
+                            | ConstValue::Enum(..)
+                            | ConstValue::NonZero(..)
+                    )
+                {
                     self.constants.insert(statement_literal.output);
                 }
                 BranchInfo { known_ap_change: true }
@@ -361,20 +364,24 @@ impl<'a> FindLocalsContext<'a> {
                 let ty = self.db.get_concrete_type_id(
                     self.lowered_function.variables[statement_struct_construct.output].ty,
                 )?;
-                self.analyze_call(struct_construct_libfunc_id(self.db, ty), inputs, outputs)
+                self.analyze_call(struct_construct_libfunc_id(self.db, ty.clone()), inputs, outputs)
             }
             lowering::Statement::StructDestructure(statement_struct_destructure) => {
                 let ty = self.db.get_concrete_type_id(
                     self.lowered_function.variables[statement_struct_destructure.input.var_id].ty,
                 )?;
-                self.analyze_call(struct_deconstruct_libfunc_id(self.db, ty)?, inputs, outputs)
+                self.analyze_call(
+                    struct_deconstruct_libfunc_id(self.db, ty.clone())?,
+                    inputs,
+                    outputs,
+                )
             }
             lowering::Statement::EnumConstruct(statement_enum_construct) => {
                 let ty = self.db.get_concrete_type_id(
                     self.lowered_function.variables[statement_enum_construct.output].ty,
                 )?;
                 self.analyze_call(
-                    enum_init_libfunc_id(self.db, ty, statement_enum_construct.variant.idx),
+                    enum_init_libfunc_id(self.db, ty.clone(), statement_enum_construct.variant.idx),
                     inputs,
                     outputs,
                 )
@@ -403,24 +410,23 @@ impl<'a> FindLocalsContext<'a> {
         }
     }
 
-    fn get_match_libfunc_signature(&self, match_info: &MatchInfo) -> Maybe<LibfuncSignature> {
-        Ok(match match_info {
-            MatchInfo::Extern(s) => {
-                let (_, concrete_function_id) = get_concrete_libfunc_id(self.db, s.function, false);
-                get_libfunc_signature(self.db, concrete_function_id)
-            }
+    fn get_match_libfunc_signature(
+        &self,
+        match_info: &MatchInfo<'db>,
+    ) -> Maybe<&'db LibfuncSignature> {
+        let db = self.db;
+        let concrete_libfunc_id = match match_info {
+            MatchInfo::Extern(s) => get_concrete_libfunc_id(db, s.function, false).1,
             MatchInfo::Enum(s) => {
-                let concrete_enum_type = self
-                    .db
-                    .get_concrete_type_id(self.lowered_function.variables[s.input.var_id].ty)?;
-                let concrete_function_id = match_enum_libfunc_id(self.db, concrete_enum_type)?;
-                get_libfunc_signature(self.db, concrete_function_id)
+                let enum_ty =
+                    db.get_concrete_type_id(self.lowered_function.variables[s.input.var_id].ty)?;
+                match_enum_libfunc_id(db, enum_ty.clone())?
             }
             MatchInfo::Value(s) => {
-                let concrete_enum_type = self.db.get_index_enum_type_id(s.num_of_arms)?;
-                let concrete_function_id = match_enum_libfunc_id(self.db, concrete_enum_type)?;
-                get_libfunc_signature(self.db, concrete_function_id)
+                let enum_ty = db.get_index_enum_type_id(s.num_of_arms)?;
+                match_enum_libfunc_id(db, enum_ty.clone())?
             }
-        })
+        };
+        Ok(get_libfunc_signature(db, &concrete_libfunc_id))
     }
 }

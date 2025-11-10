@@ -8,7 +8,6 @@ use cairo_lang_compiler::project::ProjectConfig;
 use cairo_lang_filesystem::db::FilesGroup;
 use cairo_lang_filesystem::ids::Directory;
 use cairo_lang_lowering::utils::InliningStrategy;
-use cairo_lang_starknet_classes::allowed_libfuncs::BUILTIN_ALL_LIBFUNCS_LIST;
 use cairo_lang_starknet_classes::contract_class::ContractClass;
 use cairo_lang_test_utils::test_lock;
 use itertools::Itertools;
@@ -73,15 +72,16 @@ pub fn get_test_contract(example_file_name: &str) -> ContractClass {
         );
     };
     let main_crate_ids = vec![**contracts_crate_id];
+    let crate_input = contracts_crate_id.long(&db).clone().into_crate_input(&db);
+    let main_crate_inputs = vec![crate_input];
     let diagnostics_reporter =
-        DiagnosticsReporter::default().with_crates(&main_crate_ids).allow_warnings();
+        DiagnosticsReporter::default().with_crates(&main_crate_inputs).allow_warnings();
     compile_contract_in_prepared_db(
         &db,
         Some(example_file_name),
         main_crate_ids,
         CompilerConfig {
             replace_ids: true,
-            allowed_libfuncs_list_name: Some(BUILTIN_ALL_LIBFUNCS_LIST.to_string()),
             diagnostics_reporter,
             add_statements_functions: false,
             add_statements_code_locations: false,
